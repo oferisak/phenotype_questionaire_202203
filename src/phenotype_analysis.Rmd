@@ -1,0 +1,21 @@
+---
+title: "phenotype_analysis"
+author: "Ofer Isakov"
+date: "9/13/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+hpo_analysis_folder<-'/media/SSD/Bioinformatics/Projects/phenotype_questionaire_202203/'
+project_dir<-hpo_analysis_folder
+knitr::opts_knit$set(root.dir=project_dir)
+knitr::opts_chunk$set(echo = F)
+library(ProjectTemplate)
+setwd(project_dir)
+load.project()
+
+```
+
+```{r read_data}
+hpoa_db<-parse_hpo_hpoa_db()
+```
