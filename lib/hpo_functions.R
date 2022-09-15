@@ -17,6 +17,16 @@ parse_hpo_hpoa_db<-function(){
   # add hpo term
   hpoa_df<-hpoa_df%>%left_join(genes_to_phenotype_df%>%select(HPO_ID='HPO-Term-ID',HPO_TERM='HPO-Term-Name')%>%distinct())%>%
     mutate(HPO_ID_TERM=as.character(glue('{HPO_ID}:{HPO_TERM}')))
+  terms_to_fix<-hpoa_df%>%filter(is.na(HPO_TERM))%>%pull(HPO_ID)
+  terms_to_fix<-terms_to_fix[unlist(purrr::map(terms_to_fix,~length(ontologyIndex::get_term_frequencies(hpo,.x))>0))]
+  fixed_hpoa_terms<-hpoa_df%>%
+    filter(HPO_ID%in%terms_to_fix)%>%rowwise()%>%
+    mutate(HPO_TERM=ontologyIndex::get_term_property(hpo,'name',HPO_ID),
+           HPO_ID_TERM=as.character(glue('{HPO_ID}:{HPO_TERM}')))
+  # now join the tables
+  hpoa_df<-hpoa_df%>%filter(!is.na(HPO_TERM))%>%
+    bind_rows(fixed_hpoa_terms)
+
   # Add numeric frequency term
   hpoa_df$Frequency_numeric<- as.numeric(
     unlist(

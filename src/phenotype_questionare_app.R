@@ -8,7 +8,7 @@ library(dashboardthemes)
 library(xlsx)
 library(stringr)
 
-### USE HPOSim R package to broaden the search
+
 ### add genes to each disorder
 
 
@@ -73,6 +73,8 @@ ui <- dashboardPage(dashboardHeader(title = sprintf('Phenotype questionaire'),
                             tabItem('phenotype_browser',
                                     div(selectizeInput('selected_phenotypes', label='selected phenotypes', multiple=TRUE,choices=unique(hpoa_df$HPO_ID_TERM),selected = NULL,width = 800), 
                                         style='font-size:200%;'),
+                                    #shinyWidgets::switchInput(inputId = "with_descendants", value = FALSE,onLabel = 'Include descendants',offLabel = 'Without descendants'),
+                                    checkboxInput(inputId = "with_descendants", label = 'Add descendants',value = F),
                                     DT::dataTableOutput(outputId='specific_phenos'),
                                     DT::dataTableOutput(outputId='diseases_table')
                                     )
@@ -87,12 +89,28 @@ server <- function(input, output) {
     observeEvent(input$selected_phenotypes,{
         # select only diseases with these phenotypes
         #disease_list%>%filter(mapply(function(x,y) length(setdiff(selected_phenotypes,y))==0, selected_phenotypes, disease_list$hpos))%>%slice(1)%>%pull(hpos)
+        original_selected_phenotypes<- input$selected_phenotypes
+        selected_phenotypes<-original_selected_phenotypes
+        print(input$with_descendants)
+        if (input$with_descendants){
+            phenotype_ids<-stringr::str_extract(original_selected_phenotypes,'HP:\\d+')
+            phenotype_descendants<-get_descendants(hpo,phenotype_ids)
+            phenotype_terms<-hpoa_df%>%filter(HPO_ID%in%phenotype_descendants)%>%pull(HPO_ID_TERM)%>%unique()
+            selected_phenotypes<-phenotype_terms
+            message(glue('Selected phenotypes: {paste0(original_selected_phenotypes,collapse=", ")}, with descendants: {paste0(selected_phenotypes,collapse=", ")}'))
+        }
+        
+        # relevant_diseases<-disease_list%>%
+        #     filter(mapply(function(x,y) length(setdiff(selected_phenotypes,y))==0, 
+        #                   selected_phenotypes, disease_list$hpos))%>%
+        #     pull(DatabaseID)
+        
         relevant_diseases<-disease_list%>%
-            filter(mapply(function(x,y) length(setdiff(input$selected_phenotypes,y))==0, 
-                          input$selected_phenotypes, disease_list$hpos))%>%
+            filter(mapply(function(x,y) length(intersect(selected_phenotypes,y))>0, 
+                          selected_phenotypes, disease_list$hpos))%>%
             pull(DatabaseID)
         print(length(relevant_diseases))
-        selected_phenotypes<- input$selected_phenotypes
+        
         #print(relevant_diseases)
         
         # most specific phenotypes
@@ -103,7 +121,7 @@ server <- function(input, output) {
         updateSelectInput('selected_phenotypes',
                           session=getDefaultReactiveDomain(),
                           choices = specific_phenos%>%pull(HPO_ID_TERM),
-                          selected = selected_phenotypes)
+                          selected = original_selected_phenotypes)
         
         output$specific_phenos<-DT::renderDataTable(
             DT::datatable(specific_phenos%>%arrange(desc(n)),
@@ -124,7 +142,7 @@ server <- function(input, output) {
         disease_table_with_selected_phenotypes<-hpoa_df%>%
             filter(DatabaseID %in% relevant_diseases)%>%
             group_by(DatabaseID,DiseaseName)%>%
-            summarize(phenotype_score=sum(ifelse(HPO_ID_TERM%in%input$selected_phenotypes,Frequency_score,0)))%>%
+            summarize(phenotype_score=sum(ifelse(HPO_ID_TERM%in%selected_phenotypes,Frequency_score,0)))%>%
             left_join(
                 hpoa_df%>%
                     filter(DatabaseID %in% relevant_diseases,HPO_ID%in%moi_hpos)%>%
@@ -132,17 +150,17 @@ server <- function(input, output) {
                     summarize(moi=paste0(HPO_TERM,collapse=', ')))%>%
             left_join(
                     hpoa_df%>%
-                    filter(DatabaseID %in% relevant_diseases,HPO_ID_TERM%in%input$selected_phenotypes)%>%
+                    filter(DatabaseID %in% relevant_diseases,HPO_ID_TERM%in%selected_phenotypes)%>%
                     group_by(DatabaseID,DiseaseName)%>%
                     summarize(selected_phenotype_freq=paste0(HPO_ID_TERM,"(",Frequency_cat,")",collapse=', ')))%>%
             left_join(
                 hpoa_df%>%
-                    filter(DatabaseID %in% relevant_diseases,!(HPO_ID_TERM%in%input$selected_phenotypes),Frequency_cat%in%c('obligate','very_frequent','frequent'))%>%
+                    filter(DatabaseID %in% relevant_diseases,!(HPO_ID_TERM%in%selected_phenotypes),Frequency_cat%in%c('obligate','very_frequent','frequent'))%>%
                     group_by(DatabaseID,DiseaseName)%>%
                     summarize(additional_frequent_phenos=paste0(HPO_ID_TERM,"(",Frequency_cat,")",collapse=', ')))%>%
             left_join(
                 hpoa_df%>%
-                    filter(DatabaseID %in% relevant_diseases,!(HPO_ID_TERM%in%input$selected_phenotypes),!(Frequency_cat%in%c('obligate','very_frequent','frequent')))%>%
+                    filter(DatabaseID %in% relevant_diseases,!(HPO_ID_TERM%in%selected_phenotypes),!(Frequency_cat%in%c('obligate','very_frequent','frequent')))%>%
                     group_by(DatabaseID,DiseaseName)%>%
                     summarize(additional_rare_phenos=paste0(HPO_ID_TERM,"(",Frequency_cat,")",collapse=', ')))%>%
             arrange(desc(phenotype_score))
