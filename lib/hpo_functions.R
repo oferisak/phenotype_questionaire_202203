@@ -12,8 +12,8 @@ hpo_frequencies<-list('HP:0040284'=0.025,
 #hpo_frequencies<-data.frame(hpo_frequencies)
 
 parse_hpo_hpoa_db<-function(){
-  genes_to_phenotype_df<-readr::read_delim(gene_to_phenotype_path)  
-  hpoa_df<-readr::read_delim(hpoa_path)  
+  genes_to_phenotype_df<-readr::read_delim(gene_to_phenotype_path,delim='\t')  
+  hpoa_df<-readr::read_delim(hpoa_path,delim='\t',col_types =paste0(rep('c',12),collapse=''))
   # add hpo term
   hpoa_df<-hpoa_df%>%left_join(genes_to_phenotype_df%>%select(HPO_ID='HPO-Term-ID',HPO_TERM='HPO-Term-Name')%>%distinct())%>%
     mutate(HPO_ID_TERM=as.character(glue('{HPO_ID}:{HPO_TERM}')))
