@@ -12,13 +12,16 @@ library(stringr)
 ### add genes to each disorder
 
 
-version = 0.1
+version = 0.2
 library(ProjectTemplate)
 setwd('..')
 load.project()
 disease_table<-NULL
 hpoa_df<-parse_hpo_hpoa_db()
 disease_list<-get_disease_list(hpoa_df)
+hpo_specificity_df<-readr::read_delim('./data/hpo_specificity.csv')
+hpoa_df<-hpoa_df%>%left_join(hpo_specificity_df)
+hpoa_df<-hpoa_df%>%mutate(Frequency_score_with_specificity=Frequency_score/specificity)
 
 moi_hpos<-c('HP:0000006','HP:0000007','HP:0001425','HP:0001426','HP:0001427','HP:0001428','HP:0001466','HP:0001472','HP:0003743','HP:0003745','HP:0010985')
 
@@ -142,7 +145,8 @@ server <- function(input, output) {
         disease_table_with_selected_phenotypes<-hpoa_df%>%
             filter(DatabaseID %in% relevant_diseases)%>%
             group_by(DatabaseID,DiseaseName)%>%
-            summarize(phenotype_score=sum(ifelse(HPO_ID_TERM%in%selected_phenotypes,Frequency_score,0)))%>%
+            summarize(phenotype_score=sum(ifelse(HPO_ID_TERM%in%selected_phenotypes,Frequency_score,0)),
+                      phenotype_score_with_spec=sum(ifelse(HPO_ID_TERM%in%selected_phenotypes,Frequency_score_with_specificity,0)))%>%
             left_join(
                 hpoa_df%>%
                     filter(DatabaseID %in% relevant_diseases,HPO_ID%in%moi_hpos)%>%
@@ -163,7 +167,7 @@ server <- function(input, output) {
                     filter(DatabaseID %in% relevant_diseases,!(HPO_ID_TERM%in%selected_phenotypes),!(Frequency_cat%in%c('obligate','very_frequent','frequent')))%>%
                     group_by(DatabaseID,DiseaseName)%>%
                     summarize(additional_rare_phenos=paste0(HPO_ID_TERM,"(",Frequency_cat,")",collapse=', ')))%>%
-            arrange(desc(phenotype_score))
+            arrange(desc(phenotype_score_with_spec))
         
         
         output$diseases_table<-DT::renderDataTable(

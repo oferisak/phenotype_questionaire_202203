@@ -69,7 +69,7 @@ parse_hpo_hpoa_db<-function(){
       Frequency_cat=='very_frequent'~0.9,
       Frequency_cat=='occasional'~0.3,
       Frequency_cat=='obligate'~1,
-      Frequency_cat=='unknown'~0
+      Frequency_cat=='unknown'~0.1
     ))
   # remove duplicates, take the one with the lowest frequency !! TODO !! need to consider if this is the best way
   hpoa_df<-hpoa_df%>%
@@ -92,4 +92,13 @@ library(ontologyIndex)
 data(hpo)
 get_hpo_children_by_id<-function(hpo_id){
   ontologyIndex::get_descendants(hpo,hpo_id)
+}
+
+# !!!! BEFORE you run this script, make sure the updated version of the hpoa_df is loaded, and only then create the specificity
+# table, otherwise it will cause discrepancy
+generate_hpo_specificity_table<-function(){
+  hpo_specificity_df<-hpoa_df%>%group_by(HPO_ID_TERM,HPO_ID,HPO_TERM)%>%
+    filter(!Frequency_cat=='excluded')%>%
+    summarize(specificity=sum(Frequency_score))
+  write.table(hpo_specificity_df,file='./data/hpo_specificity.csv',sep = '\t',row.names = F,quote = F)
 }
