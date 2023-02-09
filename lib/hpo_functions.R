@@ -71,10 +71,11 @@ parse_hpo_hpoa_db<-function(){
       Frequency_cat=='obligate'~1,
       Frequency_cat=='unknown'~0.1
     ))
-  # remove duplicates, take the one with the lowest frequency !! TODO !! need to consider if this is the best way
+  # remove duplicates, for each disease (DatabaseID) take the one with the highest frequency 
+  # !! TODO !! need to consider if this is the best way
   hpoa_df<-hpoa_df%>%
     group_by(DatabaseID,HPO_ID_TERM)%>%
-    slice_min(Frequency_numeric,n=1,with_ties = F)%>%
+    slice_max(Frequency_score,n=1,with_ties = F)%>%
     ungroup()
     
   return(hpoa_df)

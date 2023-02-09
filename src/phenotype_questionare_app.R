@@ -10,7 +10,7 @@ library(stringr)
 
 
 ### add genes to each disorder
-
+### consider using phevaluator to evaluate the method https://github.com/OHDSI/PheValuator
 
 version = 0.2
 library(ProjectTemplate)
@@ -76,6 +76,8 @@ ui <- dashboardPage(dashboardHeader(title = sprintf('Phenotype questionaire'),
                             tabItem('phenotype_browser',
                                     div(selectizeInput('selected_phenotypes', label='selected phenotypes', multiple=TRUE,choices=unique(hpoa_df$HPO_ID_TERM),selected = NULL,width = 800), 
                                         style='font-size:200%;'),
+                                    div(selectizeInput('ruled_out_phenotypes', label='ruled-out phenotypes', multiple=TRUE,choices=unique(hpoa_df$HPO_ID_TERM),selected = NULL,width = 800), 
+                                        style='font-size:200%;'),
                                     #shinyWidgets::switchInput(inputId = "with_descendants", value = FALSE,onLabel = 'Include descendants',offLabel = 'Without descendants'),
                                     checkboxInput(inputId = "with_descendants", label = 'Add descendants',value = F),
                                     DT::dataTableOutput(outputId='specific_phenos'),
@@ -89,11 +91,13 @@ ui <- dashboardPage(dashboardHeader(title = sprintf('Phenotype questionaire'),
 
 # Define server logic required to draw a histogram
 server <- function(input, output) {
-    observeEvent(input$selected_phenotypes,{
+
+    observeEvent(ignoreInit = TRUE, c(input$selected_phenotypes,input$ruled_out_phenotypes) ,{
         # select only diseases with these phenotypes
         #disease_list%>%filter(mapply(function(x,y) length(setdiff(selected_phenotypes,y))==0, selected_phenotypes, disease_list$hpos))%>%slice(1)%>%pull(hpos)
         original_selected_phenotypes<- input$selected_phenotypes
         selected_phenotypes<-original_selected_phenotypes
+        ruled_out_phenotypes<-input$ruled_out_phenotypes
         print(input$with_descendants)
         if (input$with_descendants){
             phenotype_ids<-stringr::str_extract(original_selected_phenotypes,'HP:\\d+')
@@ -145,8 +149,10 @@ server <- function(input, output) {
         disease_table_with_selected_phenotypes<-hpoa_df%>%
             filter(DatabaseID %in% relevant_diseases)%>%
             group_by(DatabaseID,DiseaseName)%>%
-            summarize(phenotype_score=sum(ifelse(HPO_ID_TERM%in%selected_phenotypes,Frequency_score,0)),
-                      phenotype_score_with_spec=sum(ifelse(HPO_ID_TERM%in%selected_phenotypes,Frequency_score_with_specificity,0)))%>%
+          # summarize(phenotype_score=sum(ifelse(HPO_ID_TERM%in%selected_phenotypes,Frequency_score,0)),
+          #           phenotype_score_with_spec=sum(ifelse(HPO_ID_TERM%in%selected_phenotypes,Frequency_score_with_specificity,0)))%>%
+            summarize(phenotype_score=sum(ifelse(HPO_ID_TERM%in%selected_phenotypes,Frequency_score,0))-sum(ifelse(HPO_ID_TERM%in%ruled_out_phenotypes & Frequency_cat!='excluded',Frequency_score,0)),
+                      phenotype_score_with_spec=sum(ifelse(HPO_ID_TERM%in%selected_phenotypes,Frequency_score_with_specificity,0))-sum(ifelse(HPO_ID_TERM%in%ruled_out_phenotypes & Frequency_cat!='excluded',Frequency_score,0)))%>%
             left_join(
                 hpoa_df%>%
                     filter(DatabaseID %in% relevant_diseases,HPO_ID%in%moi_hpos)%>%
