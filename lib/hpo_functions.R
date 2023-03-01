@@ -77,9 +77,29 @@ parse_hpo_hpoa_db<-function(){
     group_by(DatabaseID,HPO_ID_TERM)%>%
     slice_max(Frequency_score,n=1,with_ties = F)%>%
     ungroup()
-    
-  return(hpoa_df)
   
+  # A table containing all the descendants for each phenotype
+  all_descendants<-hpoa_df%>%select(HPO_ID)%>%distinct()%>%rowwise()%>%
+    mutate(descendants=paste0(get_hpo_children_by_id(HPO_ID),collapse=','),
+           num_desc=get_num_of_hpo_children_by_id(HPO_ID))
+  # A table containing all the phenotypes ids and terms
+  all_phenos<-hpoa_df%>%select(HPO_ID,HPO_TERM,HPO_ID_TERM)%>%distinct()
+  # join the hpo table with the descendants and then separate the descendants to different rows 
+  hpo_specificity_df<-readr::read_delim('./data/hpo_specificity.csv')
+  hpoa_df<-hpoa_df%>%left_join(hpo_specificity_df) # join with specificity before adding descendants
+  hpoa_df<-hpoa_df%>%
+    left_join(all_descendants)%>%
+    rowwise()%>%
+    separate_rows(descendants,sep=',')%>%
+    filter(descendants %in% HPO_ID)%>% # remove all descendants that are not in the original hpo table (hpos that are not associated with a disease)
+    mutate(is_descendant=ifelse(HPO_ID==descendants,F,T), # set it so that if the descendant id is the same as the original id - it is not a descendant
+           descendant_of=HPO_ID_TERM,
+           HPO_ID=descendants,
+           num_desc=ifelse(is_descendant,num_desc,1))%>%
+    select(-c(HPO_ID_TERM,HPO_TERM))%>% # remove the term and id-term and repopulate them according to the new row HPO ID
+    left_join(all_phenos)
+  hpoa_df<-hpoa_df%>%mutate(Frequency_score_with_specificity=Frequency_score/specificity)
+  return(hpoa_df)
   
 }
 
@@ -89,17 +109,23 @@ get_disease_list<-function(hpoa_df){
   return(disease_list)
 }
 
-library(ontologyIndex)
-data(hpo)
 get_hpo_children_by_id<-function(hpo_id){
   ontologyIndex::get_descendants(hpo,hpo_id)
+}
+
+get_num_of_hpo_children_by_id<-function(hpo_id){
+  hpo_desendants<-ontologyIndex::get_descendants(hpo,hpo_id)
+  return(length(hpo_desendants)-1)
 }
 
 # !!!! BEFORE you run this script, make sure the updated version of the hpoa_df is loaded, and only then create the specificity
 # table, otherwise it will cause discrepancy
 generate_hpo_specificity_table<-function(){
-  hpo_specificity_df<-hpoa_df%>%group_by(HPO_ID_TERM,HPO_ID,HPO_TERM)%>%
+  hpo_specificity_df<-full_hpoa_df%>%
+    filter(!is_descendant)%>%
+    group_by(HPO_ID_TERM,HPO_ID,HPO_TERM)%>%
     filter(!Frequency_cat=='excluded')%>%
-    summarize(specificity=sum(Frequency_score))
+    summarize(specificity=max(1,sum(Frequency_score)))# the minimal specificity should be 1 (otherwise if the frequency is rare and it only occurs once it is considered more specific than an obligate)
   write.table(hpo_specificity_df,file='./data/hpo_specificity.csv',sep = '\t',row.names = F,quote = F)
 }
+
