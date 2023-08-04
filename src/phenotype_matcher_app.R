@@ -21,6 +21,8 @@ load.project()
 disease_table<-NULL
 full_hpoa_df<-parse_hpo_hpoa_db()
 disease_list<-get_disease_list(full_hpoa_df)
+save(disease_list,full_hpoa_df,all_hpos_terms,file='./data/preprocessed_data.RData')
+
 # hpo_specificity_df<-readr::read_delim('./data/hpo_specificity.csv')
 # full_hpoa_df<-full_hpoa_df%>%left_join(hpo_specificity_df)
 # full_hpoa_df<-full_hpoa_df%>%mutate(Frequency_score_with_specificity=Frequency_score/specificity)

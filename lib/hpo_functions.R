@@ -33,29 +33,53 @@ parse_hpo_hpoa_db<-function(){
   # now join the tables
   hpoa_df<-hpoa_df%>%filter(!is.na(HPO_TERM))%>%
     bind_rows(fixed_hpoa_terms)
-
+  
   # Add numeric frequency term
-  hpoa_df$Frequency_numeric<- as.numeric(
-    unlist(
-    purrr::map(
-      hpoa_df$Frequency,
-      ~ ifelse(
-        .x %in% names(hpo_frequencies),
-        hpo_frequencies[[.x]],
-        ifelse(
-          grepl('%', .x),
-          as.numeric(stringr::str_replace(.x, '%', '')) /
-            100,
-          ifelse(
-            grepl('/', .x),ifelse(as.numeric(stringr::str_split(.x,'/')[[1]][1])<=as.numeric(stringr::str_split(.x, '/')[[1]][2]),
-                                  as.numeric(stringr::str_split(.x,'/')[[1]][1]) /
-                                    as.numeric(stringr::str_split(.x, '/')[[1]][2]),
-                                  as.numeric(stringr::str_split(.x,'/')[[1]][2]) /
-                                    as.numeric(stringr::str_split(.x, '/')[[1]][1])),
-            .x
-          )
-        )
-      ))))
+  parse_ratio_column <- function(df, column_name) {
+    # Extract the specified column
+    ratio_strings <- df[[column_name]]
+    
+    # Create vectors to store parsed values
+    x_values <-c() 
+    y_values <-c() 
+    ratio_values <- c()
+    
+    for (i in seq_along(ratio_strings)) {
+      #print(ratio_strings[i])
+      # Check if the string is NA or doesn't match the expected format
+      if (is.na(ratio_strings[i]) || !grepl("^\\d+/\\d+$", ratio_strings[i])) {
+        x_values[i] <- y_values[i] <- ratio_values[i] <- NA
+      } else {
+        # Split the string and parse the values
+        split_values <- strsplit(ratio_strings[i], "/")[[1]]
+        x_values[i] <- as.numeric(split_values[1])
+        y_values[i] <- as.numeric(split_values[2])
+        ratio_values[i] <- x_values[i] / y_values[i]
+      }
+    }
+    
+    # Create a new data frame with the original column and three parsed columns
+    df$num_o_patients_with_pheno <- x_values
+    df$num_o_patients <- y_values
+    df$Frequency_numeric <- ratio_values
+    
+    return(df)
+  }
+  
+  # First parse the X/X Frequcny
+  hpoa_df<-parse_ratio_column(hpoa_df,'Frequency')
+  # Then parse the HPOs based frequencies
+  hpoa_df<-hpoa_df%>%rowwise()%>%
+    mutate(Frequency_numeric=ifelse(Frequency%in%names(hpo_frequencies),
+                                                 hpo_frequencies[[Frequency]],
+                                                 Frequency_numeric))
+  # finally, convert the percentage to Frequency_numeric
+  hpoa_df<-hpoa_df%>%rowwise()%>%
+    mutate(Frequency_numeric=ifelse(grepl('%',Frequency),
+                                    as.numeric(str_extract(Frequency,'\\d+(.\\d)*'))/100,
+                                    Frequency_numeric))
+  
+  
   # Add categorical frequency term
   hpoa_df<-hpoa_df%>%
     mutate(Frequency_cat=case_when(
@@ -67,6 +91,12 @@ parse_hpo_hpoa_db<-function(){
       !is.na(Frequency_numeric) & Frequency_numeric==1 ~ 'obligate',
       is.na(Frequency_numeric) ~ 'unknown'
     ))
+  hpoa_df%>%count(Frequency_cat)
+  # now change phenotypes that have very low number of observations that are obligate into frequent
+  hpoa_df<-hpoa_df%>%mutate(Frequency_cat=ifelse(!is.na(num_o_patients) & num_o_patients==1 & Frequency_cat=='obligate',
+                                                 'frequent',
+                                                 Frequency_cat))
+  
   # Add score for frequency
   hpoa_df<-hpoa_df%>%
     mutate(Frequency_score=case_when(
