@@ -1,10 +1,27 @@
-hpoa_path<-'./data/phenotype.20230301.hpoa'
-gene_to_phenotype_path<-'./data/genes_to_phenotype.txt'
-hpo<-ontologyIndex::get_OBO('./data/hp.20230301.obo')
-all_hpos<-get_descendants(hpo,'HP:0000001')
-all_hpos_terms<-unlist(purrr::map(all_hpos,~get_term_property(hpo,property_name = 'name',term = .)))
-all_hpos_terms<-data.frame(HPO_ID=names(all_hpos_terms),HPO_TERM=as.character(all_hpos_terms))%>%
-  rowwise()%>%mutate(HPO_ID_TERM=glue('{HPO_ID}:{HPO_TERM}'))
+hpoa_path<-'./data/phenotype.20230806.hpoa'
+gene_to_phenotype_path<-'./data/genes_to_phenotype.20230806.txt'
+pheno_to_gene_path<-'./data/phenotype_to_genes.20230806.txt'
+
+hpo<-ontologyIndex::get_OBO('./data/hp.20230806.obo')
+
+get_all_hpo_terms<-function(){
+  message('getting all hpo terms..')
+  all_hpos<-get_descendants(hpo,'HP:0000001')
+  all_hpos_terms<-unlist(purrr::map(all_hpos,~get_term_property(hpo,property_name = 'name',term = .)))
+  all_hpos_terms<-data.frame(hpo_id=names(all_hpos_terms),hpo_name=as.character(all_hpos_terms))%>%
+    rowwise()%>%mutate(hpo_id_name=glue('{hpo_id}:{hpo_name}'))
+  return(all_hpos_terms)
+}
+
+create_disorder_to_gene_table<-function(){
+  # load pheno to gene
+  pheno_to_genes_df<-readr::read_delim(pheno_to_gene_path,delim='\t') 
+  # add disorder name
+  hpoa_df<-readr::read_delim(hpoa_path,delim='\t',col_types =paste0(rep('c',12),collapse=''),skip=4)
+  hpoa_df<-hpoa_df%>%rename('disease_id'='database_id')
+  disorder_to_gene<-pheno_to_genes_df%>%select(disease_id,gene_symbol)%>%distinct()%>%left_join(hpoa_df%>%select(disease_id,disease_name)%>%distinct())
+  return(disorder_to_gene)
+}
 
 # from https://hpo.jax.org/app/browse/term/HP:0040279 take the mean freq for each value
 hpo_frequencies<-list('HP:0040284'=0.025,
@@ -16,136 +33,135 @@ hpo_frequencies<-list('HP:0040284'=0.025,
 
 #hpo_frequencies<-data.frame(hpo_frequencies)
 
-parse_hpo_hpoa_db<-function(){
-  genes_to_phenotype_df<-readr::read_delim(gene_to_phenotype_path,delim='\t')  
-  hpoa_df<-readr::read_delim(hpoa_path,delim='\t',col_types =paste0(rep('c',12),collapse=''),skip=4)
-  hpoa_df<-hpoa_df%>%rename('DatabaseID'='#DatabaseID')
-  # add hpo term
-  hpoa_df<-hpoa_df%>%left_join(genes_to_phenotype_df%>%select(HPO_ID='HPO-Term-ID',HPO_TERM='HPO-Term-Name')%>%distinct())%>%
-    mutate(HPO_ID_TERM=as.character(glue('{HPO_ID}:{HPO_TERM}')))
-  terms_to_fix<-hpoa_df%>%filter(is.na(HPO_TERM))%>%pull(HPO_ID)
-  terms_to_fix<-terms_to_fix[unlist(purrr::map(terms_to_fix,~length(ontologyIndex::get_term_frequencies(hpo,.x))>0))]
-  fixed_hpoa_terms<-hpoa_df%>%
-    filter(HPO_ID%in%terms_to_fix)%>%rowwise()%>%
-    mutate(HPO_TERM=ontologyIndex::get_term_property(hpo,'name',HPO_ID),
-           HPO_ID_TERM=as.character(glue('{HPO_ID}:{HPO_TERM}')))
+
+parse_ratio_column <- function(df, column_name) {
+  # Extract the specified column
+  ratio_strings <- df[[column_name]]
   
-  # now join the tables
-  hpoa_df<-hpoa_df%>%filter(!is.na(HPO_TERM))%>%
-    bind_rows(fixed_hpoa_terms)
+  # Create vectors to store parsed values
+  x_values <-c() 
+  y_values <-c() 
+  ratio_values <- c()
   
-  # Add numeric frequency term
-  parse_ratio_column <- function(df, column_name) {
-    # Extract the specified column
-    ratio_strings <- df[[column_name]]
-    
-    # Create vectors to store parsed values
-    x_values <-c() 
-    y_values <-c() 
-    ratio_values <- c()
-    
-    for (i in seq_along(ratio_strings)) {
-      #print(ratio_strings[i])
-      # Check if the string is NA or doesn't match the expected format
-      if (is.na(ratio_strings[i]) || !grepl("^\\d+/\\d+$", ratio_strings[i])) {
-        x_values[i] <- y_values[i] <- ratio_values[i] <- NA
-      } else {
-        # Split the string and parse the values
-        split_values <- strsplit(ratio_strings[i], "/")[[1]]
-        x_values[i] <- as.numeric(split_values[1])
-        y_values[i] <- as.numeric(split_values[2])
-        ratio_values[i] <- x_values[i] / y_values[i]
-      }
+  for (i in seq_along(ratio_strings)) {
+    #print(ratio_strings[i])
+    # Check if the string is NA or doesn't match the expected format
+    if (is.na(ratio_strings[i]) || !grepl("^\\d+/\\d+$", ratio_strings[i])) {
+      x_values[i] <- y_values[i] <- ratio_values[i] <- NA
+    } else {
+      # Split the string and parse the values
+      split_values <- strsplit(ratio_strings[i], "/")[[1]]
+      x_values[i] <- as.numeric(split_values[1])
+      y_values[i] <- as.numeric(split_values[2])
+      ratio_values[i] <- x_values[i] / y_values[i]
     }
-    
-    # Create a new data frame with the original column and three parsed columns
-    df$num_o_patients_with_pheno <- x_values
-    df$num_o_patients <- y_values
-    df$Frequency_numeric <- ratio_values
-    
-    return(df)
   }
   
+  # Create a new data frame with the original column and three parsed columns
+  df$num_o_patients_with_pheno <- x_values
+  df$num_o_patients <- y_values
+  df$frequency_numeric <- ratio_values
+  
+  return(df)
+}
+
+parse_hpo_hpoa_db<-function(){
+  # read the pheno to gene hpo table
+  pheno_to_genes_df<-readr::read_delim(pheno_to_gene_path,delim='\t') 
+  all_diseases<-pheno_to_genes_df%>%select(disease_id)%>%distinct()
+  all_phenos_with_associated_genes<-pheno_to_genes_df%>%select(hpo_id,hpo_name)%>%mutate(hpo_id_name=glue('{hpo_id}:{hpo_name}'))%>%distinct()
+  # read the hpoa table (also from hpo)
+  hpoa_df<-readr::read_delim(hpoa_path,delim='\t',col_types =paste0(rep('c',12),collapse=''),skip=4)
+  hpoa_df<-hpoa_df%>%rename('disease_id'='database_id')
+  # now only keep disorders that are found in the pheno to gene file
+  message('removing hpos and disease without an associated gene..')
+  hpoa_df<-hpoa_df%>%inner_join(all_diseases)%>%inner_join(all_phenos_with_associated_genes)
+  # Add numeric frequency term
   # First parse the X/X Frequcny
-  hpoa_df<-parse_ratio_column(hpoa_df,'Frequency')
+  message('parsing frequency column..')
+  hpoa_df<-parse_ratio_column(hpoa_df,'frequency')
   # Then parse the HPOs based frequencies
   hpoa_df<-hpoa_df%>%rowwise()%>%
-    mutate(Frequency_numeric=ifelse(Frequency%in%names(hpo_frequencies),
-                                                 hpo_frequencies[[Frequency]],
-                                                 Frequency_numeric))
-  # finally, convert the percentage to Frequency_numeric
+    mutate(frequency_numeric=ifelse(frequency%in%names(hpo_frequencies),
+                                    hpo_frequencies[[frequency]],
+                                    frequency_numeric))
+  # finally, convert the percentage to frequency_numeric
   hpoa_df<-hpoa_df%>%rowwise()%>%
-    mutate(Frequency_numeric=ifelse(grepl('%',Frequency),
-                                    as.numeric(str_extract(Frequency,'\\d+(.\\d)*'))/100,
-                                    Frequency_numeric))
+    mutate(frequency_numeric=ifelse(grepl('%',frequency),
+                                    as.numeric(str_extract(frequency,'\\d+(.\\d)*'))/100,
+                                    frequency_numeric))
   
   
   # Add categorical frequency term
+  message('adding categorical frequency column..')
   hpoa_df<-hpoa_df%>%
-    mutate(Frequency_cat=case_when(
-      !is.na(Frequency_numeric) & Frequency_numeric<=0.049 & Frequency_numeric>=0.001 ~ 'very_rare',
-      !is.na(Frequency_numeric) & Frequency_numeric==0 ~ 'excluded',
-      !is.na(Frequency_numeric) & Frequency_numeric<=0.799 & Frequency_numeric>=0.3 ~ 'frequent',
-      !is.na(Frequency_numeric) & Frequency_numeric<=0.999 & Frequency_numeric>=0.8 ~ 'very_frequent',
-      !is.na(Frequency_numeric) & Frequency_numeric<=0.299 & Frequency_numeric>=0.05 ~ 'occasional',
-      !is.na(Frequency_numeric) & Frequency_numeric==1 ~ 'obligate',
-      is.na(Frequency_numeric) ~ 'unknown'
+    mutate(frequency_cat=case_when(
+      !is.na(frequency_numeric) & frequency_numeric<=0.049 & frequency_numeric>=0.001 ~ 'very_rare',
+      !is.na(frequency_numeric) & frequency_numeric==0 ~ 'excluded',
+      !is.na(frequency_numeric) & frequency_numeric<=0.799 & frequency_numeric>=0.3 ~ 'frequent',
+      !is.na(frequency_numeric) & frequency_numeric<=0.999 & frequency_numeric>=0.8 ~ 'very_frequent',
+      !is.na(frequency_numeric) & frequency_numeric<=0.299 & frequency_numeric>=0.05 ~ 'occasional',
+      !is.na(frequency_numeric) & frequency_numeric==1 ~ 'obligate',
+      is.na(frequency_numeric) ~ 'unknown'
     ))
-  hpoa_df%>%count(Frequency_cat)
+  hpoa_df%>%count(frequency_cat)
   # now change phenotypes that have very low number of observations that are obligate into frequent
-  hpoa_df<-hpoa_df%>%mutate(Frequency_cat=ifelse(!is.na(num_o_patients) & num_o_patients==1 & Frequency_cat=='obligate',
+  hpoa_df<-hpoa_df%>%mutate(frequency_cat=ifelse(!is.na(num_o_patients) & num_o_patients==1 & frequency_cat=='obligate',
                                                  'frequent',
-                                                 Frequency_cat))
-  
+                                                 frequency_cat))
+  hpoa_df<-hpoa_df%>%mutate(frequency_cat=ifelse(is.na(frequency_cat),'unknown',frequency_cat))
   # Add score for frequency
   hpoa_df<-hpoa_df%>%
-    mutate(Frequency_score=case_when(
-      Frequency_cat=='very_rare'~0.01,
-      Frequency_cat=='excluded'~-5,
-      Frequency_cat=='frequent'~0.8,
-      Frequency_cat=='very_frequent'~0.9,
-      Frequency_cat=='occasional'~0.3,
-      Frequency_cat=='obligate'~1,
-      Frequency_cat=='unknown'~0.1
+    mutate(frequency_score=case_when(
+      frequency_cat=='very_rare'~0.01,
+      frequency_cat=='excluded'~-5,
+      frequency_cat=='frequent'~0.8,
+      frequency_cat=='very_frequent'~0.9,
+      frequency_cat=='occasional'~0.3,
+      frequency_cat=='obligate'~1,
+      frequency_cat=='unknown'~0.1
     ))
-  # remove duplicates, for each disease (DatabaseID) take the one with the highest frequency 
+  # remove duplicates, for each disease (disease_id) take the one with the highest frequency 
   # !! TODO !! need to consider if this is the best way
+  message('removing duplicate disease_id+hpo_ids - keeping the row with the highest frequency..')
   hpoa_df<-hpoa_df%>%
-    group_by(DatabaseID,HPO_ID_TERM)%>%
-    slice_max(Frequency_score,n=1,with_ties = F)%>%
+    group_by(disease_id,hpo_id_name)%>%
+    slice_max(frequency_score,n=1,with_ties = F)%>%
     ungroup()
   
   # A table containing all the ancestors for each phenotype
-  all_ancestors<-hpoa_df%>%select(HPO_ID)%>%distinct()%>%rowwise()%>%
-    mutate(ancestors=paste0(get_hpo_ancestors_by_id(HPO_ID,with_term = F),collapse=','),
-           num_ancestors=get_num_of_hpo_ancestors_by_id(HPO_ID))
+  message('getting the ancestors of each HPO..')
+  all_ancestors<-hpoa_df%>%select(hpo_id)%>%distinct()%>%rowwise()%>%
+    mutate(ancestors=paste0(get_hpo_ancestors_by_id(hpo_id,with_term = F),collapse=','),
+           num_ancestors=get_num_of_hpo_ancestors_by_id(hpo_id))
   
   # A table containing all the phenotypes ids and terms
-  all_phenos<-hpoa_df%>%select(HPO_ID,HPO_TERM,HPO_ID_TERM)%>%distinct()
+  all_phenos<-hpoa_df%>%select(hpo_id,hpo_name,hpo_id_name)%>%distinct()
   # join the hpo table with the descendants and then separate the descendants to different rows 
   #hpo_specificity_df<-readr::read_delim('./data/hpo_specificity.csv')
   #hpoa_df<-hpoa_df%>%left_join(hpo_specificity_df) # join with specificity before adding descendants
+  message('expanding table to include all ancestors..')
   hpoa_df<-hpoa_df%>%
     left_join(all_ancestors)%>%
     rowwise()%>%
     separate_rows(ancestors,sep=',')%>%
-    mutate(is_ancestor=ifelse(HPO_ID==ancestors,F,T), # set it so that if the ancestor id is the same as the original id - it is not an ancestor
-           ancestor_of=HPO_ID_TERM,
-           HPO_ID=ancestors)%>%
-    select(-c(HPO_ID_TERM,HPO_TERM))%>% # remove the term and id-term and repopulate them according to the new row HPO ID
+    mutate(is_ancestor=ifelse(hpo_id==ancestors,F,T), # set it so that if the ancestor id is the same as the original id - it is not an ancestor
+           ancestor_of=hpo_id_name,
+           hpo_id=ancestors)%>%
+    select(-c(hpo_id_name,hpo_name))%>% # remove the term and id-term and repopulate them according to the new row HPO ID
     left_join(all_hpos_terms)
   
   hpo_specificity_df<-generate_hpo_specificity_table(hpoa_df)
   
   hpoa_df<-hpoa_df%>%
     left_join(hpo_specificity_df)%>%
-    mutate(Frequency_score_with_specificity=Frequency_score/specificity)
+    mutate(frequency_score_with_specificity=frequency_score/specificity)
   return(hpoa_df)
 }
 
 get_disease_list<-function(hpoa_df){
-  disease_list<-hpoa_df%>%group_by(DatabaseID,DiseaseName)%>%
-    summarize(hpos=list(HPO_ID_TERM))%>%ungroup()
+  disease_list<-hpoa_df%>%group_by(disease_id,DiseaseName)%>%
+    summarize(hpos=list(hpo_id_name))%>%ungroup()
   return(disease_list)
 }
 
@@ -185,11 +201,138 @@ get_num_of_hpo_children_by_id<-function(hpo_id){
 generate_hpo_specificity_table<-function(hpoa_df){
   hpo_specificity_df<-hpoa_df%>%
     #filter(!is_descendant)%>%
-    group_by(HPO_ID_TERM,HPO_ID,HPO_TERM)%>%
-    filter(!Frequency_cat=='excluded')%>%
-    summarize(specificity=sum(Frequency_score))
-    #summarize(specificity=max(1,sum(Frequency_score)))# the minimal specificity should be 1 (otherwise if the frequency is rare and it only occurs once it is considered more specific than an obligate)
+    group_by(hpo_id_name,hpo_id,hpo_name)%>%
+    filter(!frequency_cat=='excluded')%>%
+    summarize(specificity=sum(frequency_score))
+    #summarize(specificity=max(1,sum(frequency_score)))# the minimal specificity should be 1 (otherwise if the frequency is rare and it only occurs once it is considered more specific than an obligate)
   write.table(hpo_specificity_df,file='./data/hpo_specificity.csv',sep = '\t',row.names = F,quote = F)
   return(hpo_specificity_df)
 }
 
+depracated_parse_hpo_hpoa_db<-function(){
+  genes_to_phenotype_df<-readr::read_delim(gene_to_phenotype_path,delim='\t')  
+  hpoa_df<-readr::read_delim(hpoa_path,delim='\t',col_types =paste0(rep('c',12),collapse=''),skip=4)
+  hpoa_df<-hpoa_df%>%rename('disease_id'='#disease_id')
+  # add hpo term
+  hpoa_df<-hpoa_df%>%left_join(genes_to_phenotype_df%>%select(hpo_id='HPO-Term-ID',hpo_name='HPO-Term-Name')%>%distinct())%>%
+    mutate(hpo_id_name=as.character(glue('{hpo_id}:{hpo_name}')))
+  terms_to_fix<-hpoa_df%>%filter(is.na(hpo_name))%>%pull(hpo_id)
+  terms_to_fix<-terms_to_fix[unlist(purrr::map(terms_to_fix,~length(ontologyIndex::get_term_frequencies(hpo,.x))>0))]
+  fixed_hpoa_terms<-hpoa_df%>%
+    filter(hpo_id%in%terms_to_fix)%>%rowwise()%>%
+    mutate(hpo_name=ontologyIndex::get_term_property(hpo,'name',hpo_id),
+           hpo_id_name=as.character(glue('{hpo_id}:{hpo_name}')))
+  
+  # now join the tables
+  hpoa_df<-hpoa_df%>%filter(!is.na(hpo_name))%>%
+    bind_rows(fixed_hpoa_terms)
+  
+  # Add numeric frequency term
+  parse_ratio_column <- function(df, column_name) {
+    # Extract the specified column
+    ratio_strings <- df[[column_name]]
+    
+    # Create vectors to store parsed values
+    x_values <-c() 
+    y_values <-c() 
+    ratio_values <- c()
+    
+    for (i in seq_along(ratio_strings)) {
+      #print(ratio_strings[i])
+      # Check if the string is NA or doesn't match the expected format
+      if (is.na(ratio_strings[i]) || !grepl("^\\d+/\\d+$", ratio_strings[i])) {
+        x_values[i] <- y_values[i] <- ratio_values[i] <- NA
+      } else {
+        # Split the string and parse the values
+        split_values <- strsplit(ratio_strings[i], "/")[[1]]
+        x_values[i] <- as.numeric(split_values[1])
+        y_values[i] <- as.numeric(split_values[2])
+        ratio_values[i] <- x_values[i] / y_values[i]
+      }
+    }
+    
+    # Create a new data frame with the original column and three parsed columns
+    df$num_o_patients_with_pheno <- x_values
+    df$num_o_patients <- y_values
+    df$frequency_numeric <- ratio_values
+    
+    return(df)
+  }
+  
+  # First parse the X/X Frequcny
+  hpoa_df<-parse_ratio_column(hpoa_df,'frequency')
+  # Then parse the HPOs based frequencies
+  hpoa_df<-hpoa_df%>%rowwise()%>%
+    mutate(frequency_numeric=ifelse(frequency%in%names(hpo_frequencies),
+                                    hpo_frequencies[[frequency]],
+                                    frequency_numeric))
+  # finally, convert the percentage to frequency_numeric
+  hpoa_df<-hpoa_df%>%rowwise()%>%
+    mutate(frequency_numeric=ifelse(grepl('%',frequency),
+                                    as.numeric(str_extract(frequency,'\\d+(.\\d)*'))/100,
+                                    frequency_numeric))
+  
+  
+  # Add categorical frequency term
+  hpoa_df<-hpoa_df%>%
+    mutate(frequency_cat=case_when(
+      !is.na(frequency_numeric) & frequency_numeric<=0.049 & frequency_numeric>=0.001 ~ 'very_rare',
+      !is.na(frequency_numeric) & frequency_numeric==0 ~ 'excluded',
+      !is.na(frequency_numeric) & frequency_numeric<=0.799 & frequency_numeric>=0.3 ~ 'frequent',
+      !is.na(frequency_numeric) & frequency_numeric<=0.999 & frequency_numeric>=0.8 ~ 'very_frequent',
+      !is.na(frequency_numeric) & frequency_numeric<=0.299 & frequency_numeric>=0.05 ~ 'occasional',
+      !is.na(frequency_numeric) & frequency_numeric==1 ~ 'obligate',
+      is.na(frequency_numeric) ~ 'unknown'
+    ))
+  hpoa_df%>%count(frequency_cat)
+  # now change phenotypes that have very low number of observations that are obligate into frequent
+  hpoa_df<-hpoa_df%>%mutate(frequency_cat=ifelse(!is.na(num_o_patients) & num_o_patients==1 & frequency_cat=='obligate',
+                                                 'frequent',
+                                                 frequency_cat))
+  
+  # Add score for frequency
+  hpoa_df<-hpoa_df%>%
+    mutate(frequency_score=case_when(
+      frequency_cat=='very_rare'~0.01,
+      frequency_cat=='excluded'~-5,
+      frequency_cat=='frequent'~0.8,
+      frequency_cat=='very_frequent'~0.9,
+      frequency_cat=='occasional'~0.3,
+      frequency_cat=='obligate'~1,
+      frequency_cat=='unknown'~0.1
+    ))
+  # remove duplicates, for each disease (disease_id) take the one with the highest frequency 
+  # !! TODO !! need to consider if this is the best way
+  hpoa_df<-hpoa_df%>%
+    group_by(disease_id,hpo_id_name)%>%
+    slice_max(frequency_score,n=1,with_ties = F)%>%
+    ungroup()
+  
+  # A table containing all the ancestors for each phenotype
+  all_ancestors<-hpoa_df%>%select(hpo_id)%>%distinct()%>%rowwise()%>%
+    mutate(ancestors=paste0(get_hpo_ancestors_by_id(hpo_id,with_term = F),collapse=','),
+           num_ancestors=get_num_of_hpo_ancestors_by_id(hpo_id))
+  
+  # A table containing all the phenotypes ids and terms
+  all_phenos<-hpoa_df%>%select(hpo_id,hpo_name,hpo_id_name)%>%distinct()
+  all_hpos_terms<-get_all_hpo_terms()
+  # join the hpo table with the descendants and then separate the descendants to different rows 
+  #hpo_specificity_df<-readr::read_delim('./data/hpo_specificity.csv')
+  #hpoa_df<-hpoa_df%>%left_join(hpo_specificity_df) # join with specificity before adding descendants
+  hpoa_df<-hpoa_df%>%
+    left_join(all_ancestors)%>%
+    rowwise()%>%
+    separate_rows(ancestors,sep=',')%>%
+    mutate(is_ancestor=ifelse(hpo_id==ancestors,F,T), # set it so that if the ancestor id is the same as the original id - it is not an ancestor
+           ancestor_of=hpo_id_name,
+           hpo_id=ancestors)%>%
+    select(-c(hpo_id_name,hpo_name))%>% # remove the term and id-term and repopulate them according to the new row HPO ID
+    left_join(all_hpos_terms)
+  
+  hpo_specificity_df<-generate_hpo_specificity_table(hpoa_df)
+  
+  hpoa_df<-hpoa_df%>%
+    left_join(hpo_specificity_df)%>%
+    mutate(frequency_score_with_specificity=frequency_score/specificity)
+  return(hpoa_df)
+}
