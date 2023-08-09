@@ -115,11 +115,11 @@ parse_hpo_hpoa_db<-function(){
     mutate(frequency_score=case_when(
       frequency_cat=='very_rare'~0.01,
       frequency_cat=='excluded'~-5,
-      frequency_cat=='frequent'~0.8,
+      frequency_cat=='frequent'~0.7,
       frequency_cat=='very_frequent'~0.9,
       frequency_cat=='occasional'~0.3,
       frequency_cat=='obligate'~1,
-      frequency_cat=='unknown'~0.1
+      frequency_cat=='unknown'~0.7
     ))
   # remove duplicates, for each disease (disease_id) take the one with the highest frequency 
   # !! TODO !! need to consider if this is the best way

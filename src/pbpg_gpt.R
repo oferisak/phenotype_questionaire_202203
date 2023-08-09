@@ -155,7 +155,7 @@ server <- function(input, output, session) {
       slice_max(order_by = n, n = 1, with_ties = F)
     
     top_obligate_pheno(top_pheno)
-    print(top_obligate_pheno())
+    #print(top_obligate_pheno())
     top_pheno_final_descendants<-hpos_by_count_reactive_output$final_descendants
     # if the hpo in question is not an ancestor of anything
     #print(top_pheno_final_descendants)
@@ -184,7 +184,7 @@ server <- function(input, output, session) {
     # output$hpos_by_count_table <- renderTable({
     #   hpos_by_count_reactive()
     # }, rownames = FALSE)
-    print(top_pheno_final_descendants_text)
+    #print(top_pheno_final_descendants_text)
     question_text<-ifelse(top_pheno_final_descendants_text=='' | nchar(top_pheno_final_descendants_text)>500,
                           glue('There are {nrow(hpos_by_count)} more phenotypes to ask about.<br>Does your patient have {top_pheno %>% pull(hpo_id_name)}'),
                           glue("There are {nrow(hpos_by_count)} more phenotypes to ask about.<br>Does your patient have {top_pheno %>% pull(hpo_id_name)}<br>Specifically:<br>{top_pheno_final_descendants_text}?"))
@@ -243,7 +243,7 @@ server <- function(input, output, session) {
       group_by(disease_id, disease_name, frequency_cat) %>%
       summarise(hpo_id_name = paste(unique(hpo_id_name), collapse = ", ")) %>%
       pivot_wider(names_from = frequency_cat, values_from = hpo_id_name, values_fill = "")%>%
-      left_join(disorder_to_gene%>%group_by(disease_name)%>%dplyr::summarize(genes=paste0(gene_symbol,collapse=', ')))
+      left_join(disorder_to_gene%>%group_by(disease_name)%>%dplyr::summarize(genes=paste0(unique(gene_symbol),collapse=', ')))
     
     return(disorders)
   }
@@ -252,11 +252,25 @@ server <- function(input, output, session) {
   disorders_data_reactive <- reactive({
     all_phenos_data <- all_phenos_data()
     rejected_dis <- rejected_disorders()
-    
+      
     if (is.null(all_phenos_data) || is.null(rejected_dis)) return(NULL)
-    
-    disorders_data <- create_disorders_table(all_phenos_data, rejected_dis)
-    disorders_data
+    phenos_with_likelihood<-all_phenos_data$all_phenos_from_disorders_with_main_phenos%>%
+      mutate(is_rejected=ifelse(disease_id %in% rejected_dis,TRUE,FALSE),
+             hpo_likelihood_score=ifelse(is_rejected & frequency_cat!='excluded',-frequency_score,0))%>%
+      group_by(disease_id,disease_name)%>%
+      summarize(likelihood=sum(hpo_likelihood_score))%>%
+      left_join(
+        all_phenos_data$all_phenos_from_disorders_with_main_phenos%>%
+          filter(!is_ancestor)%>%
+          group_by(disease_id, disease_name, frequency_cat) %>%
+          summarise(hpo_id_name = paste(unique(hpo_id_name), collapse = ", ")) %>%
+          pivot_wider(names_from = frequency_cat, values_from = hpo_id_name, values_fill = "")%>%
+          ungroup()
+      )
+    print(phenos_with_likelihood%>%ungroup()%>%skimr::skim_without_charts(likelihood))
+    phenos_with_likelihood
+    #disorders_data <- create_disorders_table(all_phenos_data, rejected_dis)
+    #disorders_data
   })
   
   # Render the disorders table
