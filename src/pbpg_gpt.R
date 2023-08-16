@@ -9,14 +9,15 @@ data(hpo)
 load.project()
 
 # prepare the data and save it
-#full_hpoa_df<-parse_hpo_hpoa_db()
-#save(full_hpoa_df,file='/media/SSD/Bioinformatics/Projects/phenotype_questionaire_202203/data/preprocessed_data.RData')
+# full_hpoa_df<-parse_hpo_hpoa_db()
+# save(full_hpoa_df,file='/media/SSD/Bioinformatics/Projects/phenotype_questionaire_202203/data/preprocessed_data.RData')
 
 # Read the test table
 load('/media/SSD/Bioinformatics/Projects/phenotype_questionaire_202203/data/preprocessed_data.RData')
 disorder_to_gene<-create_disorder_to_gene_table()
-# full_hpoa_df <- read.delim('/media/SSD/Bioinformatics/Projects/phenotype_questionaire_202203/data/test_table.csv')
-# all_disorders <- full_hpoa_df %>% pull(disease_id) %>% unique()
+# threshold to consider disorder unlikely, lets set it to -2
+unlikely_disorder_thresh=-1
+
 ui <- fluidPage(
   theme = bslib::bs_theme(base_font = "Arial", bg = "white", fg = "black"),
   tags$head(
@@ -24,45 +25,63 @@ ui <- fluidPage(
   ),
   titlePanel("Phenotype-questionnaire Gene Panel Generator"),
   br(),
-  fluidRow(
-    column(10, offset = 0,
-           selectizeInput("main_pheno", "Select the main phenotype:",
-                          choices = NULL,
-                          multiple = T, width = '500px')
+  tabsetPanel(
+    tabPanel("Phenotype-questionnaire",
+    mainPanel(
+      
+      fluidRow(
+        column(10, offset = 0,
+               selectizeInput("main_pheno", "Select the main phenotype:",
+                              choices = NULL,
+                              multiple = T, width = '500px')
+        ),
+        # Added new selectizeInput for rejected phenotypes
+        column(10, offset = 0,
+               selectizeInput("additional_pheno", "Additional phenotypes present:",
+                              choices = NULL,
+                              multiple = T, width = '500px'),
+        ),
+        # Added new selectizeInput for rejected phenotypes
+        column(10, offset = 0,
+               selectizeInput("rejected_pheno", "Select the rejected phenotype:",
+                              choices = NULL,
+                              multiple = T, width = '500px')
+        )
+      ),
+      br(),
+      fluidRow(
+        column(4, offset = 4,
+               actionButton(inputId = "start_analysis", label = "Start Analysis", class = "btn-primary")
+        )
+      ),
+      br(),
+      fluidRow(
+        column(8, offset = 0,
+               #tags$h4("HPOs by Count"),
+               dataTableOutput("hpos_by_count_table")
+        )
+      ),
+      br()
+      )
+    ),# end of phenotype questionairre tab panel
+    tabPanel("Possible disorders",
+             mainPanel(
+               fluidRow(
+                 column(10, offset = 0,dataTableOutput("disorders_table"))
+               )
+             )
     ),
-    # Added new selectizeInput for rejected phenotypes
-    column(10, offset = 0,
-           selectizeInput("additional_pheno", "Additional phenotypes present:",
-                          choices = NULL,
-                          multiple = T, width = '500px'),
-    ),
-    # Added new selectizeInput for rejected phenotypes
-    column(10, offset = 0,
-           selectizeInput("rejected_pheno", "Select the rejected phenotype:",
-                          choices = NULL,
-                          multiple = T, width = '500px')
+    tabPanel("Panel genes",
+             mainPanel(
+               fluidRow(
+                 column(10, offset = 0,
+                   sliderInput("likelihood_threshold", "Likelihood Threshold:", -1, min = -5, max = 0,step = 0.1),
+                   dataTableOutput('panel_genes_table')
+                        )
+               )
+             )
     )
-  ),
-  br(),
-  fluidRow(
-    column(4, offset = 4,
-           actionButton(inputId = "start_analysis", label = "Start Analysis", class = "btn-primary")
-    )
-  ),
-  br(),
-  fluidRow(
-    column(8, offset = 0,
-           #tags$h4("HPOs by Count"),
-           tableOutput("hpos_by_count_table")
-    )
-  ),
-  br(),
-  fluidRow(
-    column(10, offset = 0,
-           dataTableOutput("disorders_table") # Added output for the disorders table
-    )
-  ),
-  br()
+  )
 )
 
 server <- function(input, output, session) {
@@ -105,17 +124,43 @@ server <- function(input, output, session) {
   hpos_by_count_reactive <- reactive({
     phenos_data <- all_phenos_data()
     if (is.null(phenos_data)) return(NULL)
-    main_phenos_ancestors<-NULL
-    for (main_pheno_id_term in phenos_data$main_phenos){
-      main_pheno_id<-stringr::str_extract(main_pheno_id_term,'HP:\\d+')
-      main_pheno_ancestors<-get_hpo_ancestors_by_id(main_pheno_id,with_term = T)
-      main_phenos_ancestors<-unique(c(main_phenos_ancestors,main_pheno_ancestors))
+    # main_phenos_ancestors<-NULL
+    # for (main_pheno_id_term in phenos_data$main_phenos){
+    #   main_pheno_id<-stringr::str_extract(main_pheno_id_term,'HP:\\d+')
+    #   main_pheno_ancestors<-get_hpo_ancestors_by_id(main_pheno_id,with_term = T)
+    #   main_phenos_ancestors<-unique(c(main_phenos_ancestors,main_pheno_ancestors))
+    # }
+    
+    excluded_due_to_addition <- c(phenos_data$main_phenos, additional_phenos_reactive(),maybe_phenos_reactive())
+    excluded_due_to_addition_ancestors<-NULL
+    for (excluded_pheno_id_term in excluded_due_to_addition){
+      excluded_pheno_id<-stringr::str_extract(excluded_pheno_id_term,'HP:\\d+')
+      excluded_pheno_ancestors<-get_hpo_ancestors_by_id(excluded_pheno_id,with_term = T)
+      excluded_due_to_addition_ancestors<-unique(c(excluded_due_to_addition_ancestors,excluded_pheno_ancestors))
     }
+    
+    excluded_due_to_rejection <- c(rejected_phenos())
+    excluded_due_to_rejection_descendants<-NULL
+    for (excluded_pheno_id_term in excluded_due_to_rejection){
+      excluded_pheno_id<-stringr::str_extract(excluded_pheno_id_term,'HP:\\d+')
+      excluded_pheno_descendants_ids<-get_hpo_descendants_by_id(excluded_pheno_id,with_term = F)
+      excluded_pheno_descendants<-phenos_data$all_phenos_from_disorders_with_main_phenos%>%
+        filter(hpo_id %in% excluded_pheno_descendants_ids)%>%
+        pull(hpo_id_name)
+      excluded_due_to_rejection_descendants<-unique(c(excluded_due_to_rejection_descendants,excluded_pheno_descendants))
+    }
+    #print('REJECTED:')
+    #print(excluded_due_to_rejection_descendants)
+    disorders_with_likelihood<-update_disorders_likelihood()
+    unlikely_disorders<-disorders_with_likelihood%>%filter(likelihood<unlikely_disorder_thresh)%>%pull(disease_id)
+    message(glue('There are currently {length(unlikely_disorders)}/{nrow(disorders_with_likelihood)} unlikely disorders..'))
     # Modify to exclude phenos in main and additional_pheno inputs
-    excluded_phenos <- c(main_phenos_ancestors, additional_phenos_reactive(),maybe_phenos_reactive())
+    #excluded_phenos <- c(main_phenos_ancestors, additional_phenos_reactive(),maybe_phenos_reactive(),rejected_phenos())
     hpos_from_disorders_that_are_not_in_main <- phenos_data$all_phenos_from_disorders_with_main_phenos %>%
-      filter(!(disease_id %in% rejected_disorders())) %>%
-      filter(!(hpo_id_name %in% excluded_phenos))
+      #filter(!(disease_id %in% rejected_disorders())) %>%
+      filter(!(disease_id %in% unlikely_disorders)) %>%
+      filter(!(hpo_id_name %in% excluded_due_to_addition_ancestors))%>%
+      filter(!(hpo_id_name %in% excluded_due_to_rejection_descendants))
     
     # for each ancestor, collect all final descendants
     final_descendants<-hpos_from_disorders_that_are_not_in_main%>%
@@ -125,7 +170,7 @@ server <- function(input, output, session) {
 
     # final_descendants<-NULL # 
     hpos_by_count <- hpos_from_disorders_that_are_not_in_main %>%
-      filter(frequency_cat == 'obligate') %>%
+      filter(frequency_cat %in% c('obligate','very_frequent','frequent','unknown')) %>%
       group_by(hpo_id_name) %>%
       summarize(n = n())%>%
       arrange(desc(n))
@@ -137,7 +182,6 @@ server <- function(input, output, session) {
   # Observer to update the choices of rejected phenotypes selectizeInput
   observe({
     rejected <- rejected_phenos()
-    rejected_dis <- rejected_disorders()
     all_phenos <- all_phenos_data()$all_phenos_from_disorders_with_main_phenos$hpo_id_name
     updateSelectizeInput(session, inputId = 'rejected_pheno', choices = unique(all_phenos), selected = rejected)
   })
@@ -169,9 +213,9 @@ server <- function(input, output, session) {
         
     }
     if (num_of_phenos_that_are_obligated > 0) {
-      output$hpos_by_count_table <- renderTable({
+      output$hpos_by_count_table <- renderDataTable({
         hpos_by_count_reactive()$hpos_by_count
-      }, rownames = FALSE)
+      })
     } else {
       output$hpos_by_count_table <-NULL
       # output$hpos_by_count_table <- renderTable({
@@ -196,9 +240,14 @@ server <- function(input, output, session) {
       footer = tagList(
         actionButton("yes_button", "Yes"),
         actionButton("maybe_button", "Maybe"),
-        actionButton("no_button", "No")
+        actionButton("no_button", "No"),
+        actionButton("stop_button", "Finish")
       )
     ))
+  })
+  
+  observeEvent(input$stop_button, {
+    removeModal()  
   })
   
   observeEvent(input$yes_button, {
@@ -213,13 +262,6 @@ server <- function(input, output, session) {
     phenos_data <- all_phenos_data()
     rejected_phenos_current <- c(rejected_phenos(), top_obligate_pheno()$hpo_id_name)
     rejected_phenos(rejected_phenos_current)
-    
-    rejected_disorders_current <- c(rejected_disorders(), phenos_data$all_phenos_from_disorders_with_main_phenos %>%
-                                      filter(frequency_cat == 'obligate') %>%
-                                      filter(hpo_id_name %in% rejected_phenos_current) %>%
-                                      pull(disease_id))
-    
-    rejected_disorders(rejected_disorders_current)
   })
   
   observeEvent(input$maybe_button, {
@@ -248,17 +290,29 @@ server <- function(input, output, session) {
     return(disorders)
   }
   
+  update_disorders_likelihood<-function(){
+    all_phenos_data <- all_phenos_data()
+    rejected_phen <- rejected_phenos()
+    disorders_with_likelihood<-all_phenos_data$all_phenos_from_disorders_with_main_phenos%>%
+      mutate(is_rejected=ifelse(hpo_id_name %in% rejected_phen,TRUE,FALSE),
+             hpo_likelihood_score=ifelse(is_rejected & frequency_cat!='excluded',-frequency_score,0))%>%
+      # if you want only one occurance of each hpo term per disorder group by hpo_id_name use distinct, otherwise remove it from grouping
+      select(disease_id,hpo_id_name,hpo_likelihood_score)%>%distinct()%>%
+      group_by(disease_id)%>%
+      summarize(likelihood=sum(hpo_likelihood_score))%>%
+      # re-add the disease name
+      left_join(disorder_to_gene%>%group_by(disease_id,disease_name)%>%summarize(genes=paste0(gene_symbol,collapse=','))%>%ungroup())
+    return(disorders_with_likelihood)
+  }
+  
   # Reactive to prepare the data for the disorders table
   disorders_data_reactive <- reactive({
+    # rejected_dis <- rejected_disorders()
     all_phenos_data <- all_phenos_data()
-    rejected_dis <- rejected_disorders()
-      
-    if (is.null(all_phenos_data) || is.null(rejected_dis)) return(NULL)
-    phenos_with_likelihood<-all_phenos_data$all_phenos_from_disorders_with_main_phenos%>%
-      mutate(is_rejected=ifelse(disease_id %in% rejected_dis,TRUE,FALSE),
-             hpo_likelihood_score=ifelse(is_rejected & frequency_cat!='excluded',-frequency_score,0))%>%
-      group_by(disease_id,disease_name)%>%
-      summarize(likelihood=sum(hpo_likelihood_score))%>%
+    #if (is.null(all_phenos_data) || is.null(rejected_dis)) return(NULL)
+    if (is.null(all_phenos_data)) return(NULL)
+    disorders_with_likelihood<-update_disorders_likelihood()  
+    disorders_with_likelihood<-disorders_with_likelihood%>%
       left_join(
         all_phenos_data$all_phenos_from_disorders_with_main_phenos%>%
           filter(!is_ancestor)%>%
@@ -266,18 +320,34 @@ server <- function(input, output, session) {
           summarise(hpo_id_name = paste(unique(hpo_id_name), collapse = ", ")) %>%
           pivot_wider(names_from = frequency_cat, values_from = hpo_id_name, values_fill = "")%>%
           ungroup()
-      )
-    print(phenos_with_likelihood%>%ungroup()%>%skimr::skim_without_charts(likelihood))
-    phenos_with_likelihood
-    #disorders_data <- create_disorders_table(all_phenos_data, rejected_dis)
-    #disorders_data
+      )%>%
+      arrange(desc(likelihood))
+    disorders_with_likelihood
+
+  })
+  
+  panel_genes_reactive<-reactive({
+    if (is.null(all_phenos_data)) return(NULL)
+    disorders_with_likelihood<-update_disorders_likelihood()
+    # filter by user selected threshold
+    likely_disorders<-disorders_with_likelihood%>%filter(likelihood>input$likelihood_threshold)%>%select(-genes)
+    panel_genes_table<-disorder_to_gene%>%inner_join(likely_disorders)%>%
+      mutate(disease_id_name=glue('{disease_id}:{disease_name}'))%>%
+      group_by(gene_symbol)%>%
+      summarize(disorders=paste0(disease_id_name,collapse=' | '))
+    panel_genes_table
   })
   
   # Render the disorders table
-  output$disorders_table <- renderDataTable({
-    disorders_data_reactive()
+  output$disorders_table <- DT::renderDataTable(
+    DT::datatable(disorders_data_reactive()),
+    options=list(
+      filter = list(position = 'top')
+    )
+  )
+  output$panel_genes_table<-renderDataTable({
+    panel_genes_reactive()
   })
-  
 }
 
 

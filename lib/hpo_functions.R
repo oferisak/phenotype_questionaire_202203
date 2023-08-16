@@ -113,14 +113,16 @@ parse_hpo_hpoa_db<-function(){
   # Add score for frequency
   hpoa_df<-hpoa_df%>%
     mutate(frequency_score=case_when(
-      frequency_cat=='very_rare'~0.01,
+      frequency_cat=='very_rare'~0.025,
       frequency_cat=='excluded'~-5,
-      frequency_cat=='frequent'~0.7,
+      frequency_cat=='frequent'~0.55,
       frequency_cat=='very_frequent'~0.9,
-      frequency_cat=='occasional'~0.3,
+      frequency_cat=='occasional'~0.17,
       frequency_cat=='obligate'~1,
-      frequency_cat=='unknown'~0.7
+      frequency_cat=='unknown'~0.55
     ))
+  
+  
   # remove duplicates, for each disease (disease_id) take the one with the highest frequency 
   # !! TODO !! need to consider if this is the best way
   message('removing duplicate disease_id+hpo_ids - keeping the row with the highest frequency..')
@@ -131,6 +133,7 @@ parse_hpo_hpoa_db<-function(){
   
   # A table containing all the ancestors for each phenotype
   message('getting the ancestors of each HPO..')
+  all_hpos_terms<-get_all_hpo_terms()
   all_ancestors<-hpoa_df%>%select(hpo_id)%>%distinct()%>%rowwise()%>%
     mutate(ancestors=paste0(get_hpo_ancestors_by_id(hpo_id,with_term = F),collapse=','),
            num_ancestors=get_num_of_hpo_ancestors_by_id(hpo_id))
@@ -165,9 +168,25 @@ get_disease_list<-function(hpoa_df){
   return(disease_list)
 }
 
-get_hpo_children_by_id<-function(hpo_id){
-  ontologyIndex::get_descendants(hpo,hpo_id)
+# retrieve all the descendants of a given ID (in oppose to just the nearest children)
+get_hpo_descendants_by_id<-function(hpo_id,with_term=T){
+  descendants<-ontologyIndex::get_descendants(hpo,hpo_id)
+  if (length(descendants)==0){
+    message(glue('HPO ID {hpo_id} is not found..skipping..'))
+    return(NA)
+  }
+  get_desc_name<-function(hpo_id){
+    hpo_name<-ontologyIndex::get_term_property(ontology=hpo, property="name", term=hpo_id)
+    return(glue('{hpo_id}:{hpo_name}'))
+  }
+  if(with_term){
+    descendants_terms<-purrr::map_vec(descendants,get_desc_name)
+    return(descendants_terms)
+  }else{
+    return(descendants)
+  }
 }
+
 
 get_hpo_ancestors_by_id<-function(hpo_id,with_term=T){
   #print(hpo_id)
