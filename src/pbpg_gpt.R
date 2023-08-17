@@ -1,5 +1,5 @@
 
-version = 0.1
+version = 0.11
 library(shiny)
 library(shinyWidgets)
 library(ProjectTemplate)
@@ -19,11 +19,12 @@ disorder_to_gene<-create_disorder_to_gene_table()
 unlikely_disorder_thresh=-1
 
 ui <- fluidPage(
-  theme = bslib::bs_theme(base_font = "Arial", bg = "white", fg = "black"),
+  br(),
+  theme = bslib::bs_theme(base_font = "Arial", bg = "white", fg = "black",heading_font = 'bold'),
   tags$head(
     tags$style(HTML(".main-header {text-align: center;} .subtitle {text-align: center;} .bootstrap-select.btn-group .dropdown-toggle { width: 300px !important; }"))
   ),
-  titlePanel("Phenotype-questionnaire Gene Panel Generator"),
+  titlePanel("Phenotype-Questionnaire Gene Panel Generator"),
   br(),
   tabsetPanel(
     tabPanel("Phenotype-questionnaire",
@@ -91,17 +92,22 @@ server <- function(input, output, session) {
   maybe_phenos_reactive<-reactiveVal(c())
   rejected_disorders <- reactiveVal(c())
   top_obligate_pheno <- reactiveVal()
+  modal_shown <- reactiveVal(FALSE)
   
   observe({
     updateSelectizeInput(session, "main_pheno", choices = unique(full_hpoa_df$hpo_id_name),server=TRUE)
   })
   
+  
   observeEvent(input$start_analysis, {
+    updateActionButton(session, "start_analysis", label = "Resume Analysis")
     main_phenos <- input$main_pheno
     main_phenos_reactive(main_phenos)
+    modal_shown(FALSE)
   })
   
   all_phenos_data <- reactive({
+    message('Running reactive: all_phenos_data')
     main_phenos <- main_phenos_reactive()
     
     if (is.null(main_phenos)) return(NULL)
@@ -122,15 +128,11 @@ server <- function(input, output, session) {
   
   # Reactive expression for hpos_by_count
   hpos_by_count_reactive <- reactive({
+    message('Running reactive: hpos_by_count_reactive')
     phenos_data <- all_phenos_data()
     if (is.null(phenos_data)) return(NULL)
-    # main_phenos_ancestors<-NULL
-    # for (main_pheno_id_term in phenos_data$main_phenos){
-    #   main_pheno_id<-stringr::str_extract(main_pheno_id_term,'HP:\\d+')
-    #   main_pheno_ancestors<-get_hpo_ancestors_by_id(main_pheno_id,with_term = T)
-    #   main_phenos_ancestors<-unique(c(main_phenos_ancestors,main_pheno_ancestors))
-    # }
-    
+
+    # Exclude all ancestors of phenos that the user said are present or maybe present in the patient
     excluded_due_to_addition <- c(phenos_data$main_phenos, additional_phenos_reactive(),maybe_phenos_reactive())
     excluded_due_to_addition_ancestors<-NULL
     for (excluded_pheno_id_term in excluded_due_to_addition){
@@ -139,6 +141,19 @@ server <- function(input, output, session) {
       excluded_due_to_addition_ancestors<-unique(c(excluded_due_to_addition_ancestors,excluded_pheno_ancestors))
     }
     
+    # Exclude all descendants of phenos that the user said are present in the patient
+    excluded_due_to_addition <- c(phenos_data$main_phenos, additional_phenos_reactive())
+    excluded_due_to_addition_descendants<-NULL
+    for (excluded_pheno_id_term in excluded_due_to_addition){
+      excluded_pheno_id<-stringr::str_extract(excluded_pheno_id_term,'HP:\\d+')
+      excluded_pheno_descendants_ids<-get_hpo_descendants_by_id(excluded_pheno_id,with_term = F)
+      excluded_pheno_descendants<-phenos_data$all_phenos_from_disorders_with_main_phenos%>%
+        filter(hpo_id %in% excluded_pheno_descendants_ids)%>%
+        pull(hpo_id_name)
+      excluded_due_to_addition_descendants<-unique(c(excluded_due_to_addition_descendants,excluded_pheno_descendants))
+    }
+    
+    # Exclude all descendants of phenos that the user said are not in the patient
     excluded_due_to_rejection <- c(rejected_phenos())
     excluded_due_to_rejection_descendants<-NULL
     for (excluded_pheno_id_term in excluded_due_to_rejection){
@@ -149,10 +164,10 @@ server <- function(input, output, session) {
         pull(hpo_id_name)
       excluded_due_to_rejection_descendants<-unique(c(excluded_due_to_rejection_descendants,excluded_pheno_descendants))
     }
-    #print('REJECTED:')
-    #print(excluded_due_to_rejection_descendants)
+    
     disorders_with_likelihood<-update_disorders_likelihood()
-    unlikely_disorders<-disorders_with_likelihood%>%filter(likelihood<unlikely_disorder_thresh)%>%pull(disease_id)
+    disorders_remaining<-disorders_with_likelihood%>%filter(likelihood>unlikely_disorder_thresh)%>%pull(disease_id)
+    unlikely_disorders<-disorders_with_likelihood%>%filter(likelihood<=unlikely_disorder_thresh)%>%pull(disease_id)
     message(glue('There are currently {length(unlikely_disorders)}/{nrow(disorders_with_likelihood)} unlikely disorders..'))
     # Modify to exclude phenos in main and additional_pheno inputs
     #excluded_phenos <- c(main_phenos_ancestors, additional_phenos_reactive(),maybe_phenos_reactive(),rejected_phenos())
@@ -160,6 +175,7 @@ server <- function(input, output, session) {
       #filter(!(disease_id %in% rejected_disorders())) %>%
       filter(!(disease_id %in% unlikely_disorders)) %>%
       filter(!(hpo_id_name %in% excluded_due_to_addition_ancestors))%>%
+      filter(!(hpo_id_name %in% excluded_due_to_addition_descendants))%>%
       filter(!(hpo_id_name %in% excluded_due_to_rejection_descendants))
     
     # for each ancestor, collect all final descendants
@@ -176,7 +192,8 @@ server <- function(input, output, session) {
       arrange(desc(n))
     
     list(hpos_by_count=hpos_by_count,
-         final_descendants=final_descendants)
+         final_descendants=final_descendants,
+         disorders_remaining=disorders_remaining)
   })
 
   # Observer to update the choices of rejected phenotypes selectizeInput
@@ -191,7 +208,10 @@ server <- function(input, output, session) {
     if (is.null(phenos_data)) return()
     hpos_by_count_reactive_output<-hpos_by_count_reactive()
     hpos_by_count<-hpos_by_count_reactive_output$hpos_by_count
-
+    disorders_remaining<-hpos_by_count_reactive_output$disorders_remaining
+    output$hpos_by_count_table <- renderDataTable({
+      hpos_by_count_reactive()$hpos_by_count
+    })
     num_of_phenos_that_are_obligated <- nrow(hpos_by_count)
     top_pheno <- hpos_by_count %>%
       ungroup() %>%
@@ -212,45 +232,42 @@ server <- function(input, output, session) {
                                                  pull(final_desc))
         
     }
-    if (num_of_phenos_that_are_obligated > 0) {
-      output$hpos_by_count_table <- renderDataTable({
-        hpos_by_count_reactive()$hpos_by_count
-      })
+    if (num_of_phenos_that_are_obligated > 0 & !modal_shown()) {
+      question_text<-ifelse(top_pheno_final_descendants_text=='' | nchar(top_pheno_final_descendants_text)>800,
+                            glue('There are {nrow(hpos_by_count)} more phenotypes from {length(disorders_remaining)} different disorders to ask about.<br>Does your patient have {top_pheno %>% pull(hpo_id_name)}'),
+                            glue("There are {nrow(hpos_by_count)} more phenotypes from {length(disorders_remaining)} different disorders to ask about.<br>Does your patient have {top_pheno %>% pull(hpo_id_name)}<br>Specifically:<br>{top_pheno_final_descendants_text}?"))
+      print(question_text)
+      showModal(modalDialog(
+        title = "Confirm Phenotype",
+        #glue("There are {nrow(hpos_by_count)} more phenotypes to ask about.\nDoes your patient have {top_pheno %>% pull(hpo_id_name)}\nSpecifically:\n{top_pheno_final_descendants}?"),
+        HTML(question_text),
+        footer = tagList(
+          actionButton("yes_button", "Yes"),
+          actionButton("maybe_button", "Maybe"),
+          actionButton("no_button", "No"),
+          actionButton("stop_button", "Finish")
+        )
+      ))
+      modal_shown(TRUE)
     } else {
-      output$hpos_by_count_table <-NULL
+      #output$hpos_by_count_table <-NULL
       # output$hpos_by_count_table <- renderTable({
       #   hpo_combinations_reactive()
       #}, rownames = FALSE)
       
       return()
     }
-    # Render the table for hpos_by_count
-    # output$hpos_by_count_table <- renderTable({
-    #   hpos_by_count_reactive()
-    # }, rownames = FALSE)
-    #print(top_pheno_final_descendants_text)
-    question_text<-ifelse(top_pheno_final_descendants_text=='' | nchar(top_pheno_final_descendants_text)>500,
-                          glue('There are {nrow(hpos_by_count)} more phenotypes to ask about.<br>Does your patient have {top_pheno %>% pull(hpo_id_name)}'),
-                          glue("There are {nrow(hpos_by_count)} more phenotypes to ask about.<br>Does your patient have {top_pheno %>% pull(hpo_id_name)}<br>Specifically:<br>{top_pheno_final_descendants_text}?"))
-    print(question_text)
-    showModal(modalDialog(
-      title = "Confirm Phenotype",
-      #glue("There are {nrow(hpos_by_count)} more phenotypes to ask about.\nDoes your patient have {top_pheno %>% pull(hpo_id_name)}\nSpecifically:\n{top_pheno_final_descendants}?"),
-      HTML(question_text),
-      footer = tagList(
-        actionButton("yes_button", "Yes"),
-        actionButton("maybe_button", "Maybe"),
-        actionButton("no_button", "No"),
-        actionButton("stop_button", "Finish")
-      )
-    ))
+    
   })
   
   observeEvent(input$stop_button, {
+    modal_shown(TRUE)
     removeModal()  
+
   })
   
   observeEvent(input$yes_button, {
+    modal_shown(FALSE)
     removeModal()
     additional_phenos <- c(additional_phenos_reactive(), top_obligate_pheno()$hpo_id_name)
     additional_phenos_reactive(additional_phenos)
@@ -258,6 +275,7 @@ server <- function(input, output, session) {
   })
   
   observeEvent(input$no_button, {
+    modal_shown(FALSE)
     removeModal()
     phenos_data <- all_phenos_data()
     rejected_phenos_current <- c(rejected_phenos(), top_obligate_pheno()$hpo_id_name)
@@ -265,6 +283,7 @@ server <- function(input, output, session) {
   })
   
   observeEvent(input$maybe_button, {
+    modal_shown(FALSE)
     removeModal()
     maybe_phenos <- c(maybe_phenos_reactive(), top_obligate_pheno()$hpo_id_name)
     maybe_phenos_reactive(maybe_phenos)
@@ -307,9 +326,8 @@ server <- function(input, output, session) {
   
   # Reactive to prepare the data for the disorders table
   disorders_data_reactive <- reactive({
-    # rejected_dis <- rejected_disorders()
+    message('Running reactive: disorders_data_reactive')
     all_phenos_data <- all_phenos_data()
-    #if (is.null(all_phenos_data) || is.null(rejected_dis)) return(NULL)
     if (is.null(all_phenos_data)) return(NULL)
     disorders_with_likelihood<-update_disorders_likelihood()  
     disorders_with_likelihood<-disorders_with_likelihood%>%
@@ -327,14 +345,16 @@ server <- function(input, output, session) {
   })
   
   panel_genes_reactive<-reactive({
+    message('Running reactive: panel_genes_reactive')
     if (is.null(all_phenos_data)) return(NULL)
     disorders_with_likelihood<-update_disorders_likelihood()
     # filter by user selected threshold
     likely_disorders<-disorders_with_likelihood%>%filter(likelihood>input$likelihood_threshold)%>%select(-genes)
-    panel_genes_table<-disorder_to_gene%>%inner_join(likely_disorders)%>%
+    panel_genes_table<-disorder_to_gene%>%
+      inner_join(likely_disorders)%>%
       mutate(disease_id_name=glue('{disease_id}:{disease_name}'))%>%
       group_by(gene_symbol)%>%
-      summarize(disorders=paste0(disease_id_name,collapse=' | '))
+      summarize(disorders=paste0(disease_id_name,collapse=' | '),confidence=round(max(likelihood),3))
     panel_genes_table
   })
   
