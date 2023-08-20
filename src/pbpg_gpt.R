@@ -1,5 +1,5 @@
 
-version = 0.2
+version = 0.22
 library(shiny)
 library(shinyWidgets)
 library(ProjectTemplate)
@@ -8,13 +8,6 @@ library(bslib)
 setwd('..')
 data(hpo)
 load.project()
-
-# TODO : enable the selection of panelapp panel (or combination of ) instead of hpos. 
-# in this route, the tool will first collect all the genes and their corresponding HPOs and continue from there. this way the 
-# tool will narrow down the panelapp panel according to the phenotypes present in the patient
-# or maybe instead, for a given panel, collect all the phenotypes corresponding to all the genes > 
-# collect all the disorders with those phenotypes and continue from there
-
 
 # prepare the data and save it
 # full_hpoa_df<-parse_hpo_hpoa_db()
@@ -50,6 +43,8 @@ ui <- fluidPage(
     fg = "#333",
     primary = "#4b3359"
   ),
+  
+  # ui: tags - head ####
   tags$head(
     tags$style(HTML("
       .main-header {text-align: center;} 
@@ -67,20 +62,22 @@ ui <- fluidPage(
   ),
   br(),
   tabsetPanel(
+    # ui: tab - phenotype-questionnaire ####
     tabPanel("Phenotype-questionnaire",
              mainPanel(
+               br(),
                fluidRow(
                  column(10, 
-                        selectizeInput("main_pheno" ," Select the main phenotype:", choices = NULL, multiple = T)
+                        selectizeInput("main_pheno" ,strong("Select the Main Phenotypes:"), choices = NULL, multiple = T)
                  ),
                  column(10, 
-                        selectizeInput("panelapp_panel" ," OR: Select PanelApp panels:", choices = unique(panelapp$panel_name), multiple = T)
+                        selectizeInput("panelapp_panel" ,strong("OR: Select PanelApp Panels:"), choices = unique(panelapp$panel_name), multiple = T)
                  ),
                  column(10, 
-                        selectizeInput("additional_pheno" ," Additional phenotypes present:", choices = NULL, multiple = T)
+                        selectizeInput("additional_pheno" ,"Possible Phenotypes Present:", choices = NULL, multiple = T)
                  ),
                  column(10, 
-                        selectizeInput("rejected_pheno" ," Select the rejected phenotype:", choices = NULL, multiple = T)
+                        selectizeInput("rejected_pheno" ,"Rejected Phenotypes:", choices = NULL, multiple = T)
                  )
                ),
                br(),
@@ -96,21 +93,33 @@ ui <- fluidPage(
                br()
              )
     ),
+    # ui: tab - possible disorders ####
     tabPanel("Possible disorders",
              mainPanel(
                br(),
                fluidRow(
-                 column(10, dataTableOutput("disorders_table"))
+                 column(10,downloadButton("download_disorders", "Download Disorders Table"))
+               ),
+               br(),
+               fluidRow(
+                 column(10,dataTableOutput("disorders_table"))
                )
              )
     ),
+    # ui: tab - panel genes ####
     tabPanel("Panel genes",
              mainPanel(
+               br(),
                fluidRow(
-                 column(10, 
-                        sliderInput("likelihood_threshold", "Likelihood Threshold:", -1, min = -5, max = 0, step = 0.1),
-                        dataTableOutput('panel_genes_table')
-                 )
+                 column(10,sliderInput("likelihood_threshold", "Likelihood Threshold:", -1, min = -5, max = 0, step = 0.1))
+               ),
+               br(),
+               fluidRow(
+                 column(10,downloadButton("download_panel_genes", "Download Panel Genes Table"))
+               ),
+               br(),
+               fluidRow(
+                 column(10,dataTableOutput('panel_genes_table'))
                )
              )
     )
@@ -144,6 +153,7 @@ server <- function(input, output, session) {
     }
   })
   
+  # observer - clicking start analysis button ####
   observeEvent(input$start_analysis, {
     updateActionButton(session, "start_analysis", label = "Resume Analysis")
     main_phenos <- input$main_pheno
@@ -297,8 +307,8 @@ server <- function(input, output, session) {
     }
     if (num_of_phenos_that_are_obligated > 0 & !modal_shown()) {
       question_text<-ifelse(top_pheno_final_descendants_text=='' | nchar(top_pheno_final_descendants_text)>800,
-                            glue('There are {nrow(hpos_by_count)} more phenotypes from {length(disorders_remaining)} different disorders to ask about.<br>Does your patient have {top_pheno %>% pull(hpo_id_name)}'),
-                            glue("There are {nrow(hpos_by_count)} more phenotypes from {length(disorders_remaining)} different disorders to ask about.<br>Does your patient have {top_pheno %>% pull(hpo_id_name)}<br>Specifically:<br>{top_pheno_final_descendants_text}?"))
+                            glue('There are {nrow(hpos_by_count)} more phenotypes from {length(disorders_remaining)} different disorders to ask about.<br>Do you want to include disorders that have: {top_pheno %>% pull(hpo_id_name)}'),
+                            glue("There are {nrow(hpos_by_count)} more phenotypes from {length(disorders_remaining)} different disorders to ask about.<br>Do you want to include disorders that have: {top_pheno %>% pull(hpo_id_name)}<br>Specifically:<br>{top_pheno_final_descendants_text}"))
       print(question_text)
       showModal(modalDialog(
         title = "Confirm Phenotype",
@@ -489,24 +499,44 @@ server <- function(input, output, session) {
     panel_genes_table
   })
   
-  # Render the disorders table
+  get_filename<-function(suffix){
+    selected_phenos <- input$main_pheno
+    selected_panelapp<-input$panelapp_panel
+    if (is.null(selected_panelapp)){
+      normalized_phenos <- tolower(stringr::str_replace_all(make.names(paste0(selected_phenos,collapse='_')),'HP.\\d+.',''))
+    }else{
+      normalized_phenos <- tolower(stringr::str_replace_all(make.names(paste0(selected_panelapp,collapse='_')),'HP.\\d+.',''))
+    }
+    glue('{normalized_phenos}_{Sys.Date()}_{suffix}')
+  }
+  # output - download disorders table button ####
+  output$download_disorders <- downloadHandler(
+    filename = get_filename('disorders'),
+    content = function(file) {
+      data <- disorders_data_reactive()
+      write.table(data, file,row.names = F,sep = '\t')
+    }
+  )
+  # output - download panel genes table button ####
+  output$download_panel_genes <- downloadHandler(
+    filename = get_filename('genes'),
+    content = function(file) {
+      data <- panel_genes_reactive()
+      write.table(data, file,row.names = F,sep = '\t')
+    }
+  )
+  # output - disorders table ####
   output$disorders_table <- DT::renderDataTable(
     disorders_data_reactive(),
     extensions = 'Buttons',
-    options=list(
-      filter = 'top',
-      dom = 'Bfrtipl',
-      buttons = c('copy', 'csv', 'excel')
-    )
+    options=list(filter = 'top')
   )
+  
+  # output - panel genes table ####
   output$panel_genes_table<-renderDataTable(
     panel_genes_reactive(),
     extensions = 'Buttons',
-    options=list(
-      filter = 'top',
-      dom = 'Bfrtipl',
-      buttons = c('copy', 'csv', 'excel')
-    )
+    options=list(filter = 'top')
   )
 }
 
