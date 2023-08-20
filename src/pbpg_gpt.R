@@ -1,9 +1,10 @@
 
-version = 0.11
+version = 0.2
 library(shiny)
 library(shinyWidgets)
 library(ProjectTemplate)
 library(ontologyIndex)
+library(bslib)
 setwd('..')
 data(hpo)
 load.project()
@@ -14,7 +15,6 @@ load.project()
 # or maybe instead, for a given panel, collect all the phenotypes corresponding to all the genes > 
 # collect all the disorders with those phenotypes and continue from there
 
-# TODO : add a disorder likelihood based on the main and possible phenotypes
 
 # prepare the data and save it
 # full_hpoa_df<-parse_hpo_hpoa_db()
@@ -26,83 +26,101 @@ disorder_to_gene<-create_disorder_to_gene_table()
 # Read panelapp panels
 message('Parsing panelapp panels..')
 panelapp<-readr::read_delim('./data/panelapp_db_2023-08-17.csv.gz')
-panelapp_genes<-panelapp%>%group_by(gene_symbol,panel_name)%>%
-  slice_max(confidence_level,with_ties = F)%>%ungroup()%>%
-  group_by(gene_symbol)%>%
-  summarize(panelapp_panels=paste0(panel_name,'(',confidence_level,')',collapse= '|'))
+
+# collect only disorders with the genes in the selected panel
+panelapp_id<-49
+panelapp_genes<-panelapp%>%filter(panel_id==panelapp_id)%>%pull(gene_symbol)
+# setdiff(panelapp_genes,disorder_to_gene$gene_symbol)
+
+#panelapp_disorders<-disorder_to_gene%>%filter(gene_symbol%in%panelapp_genes)
+
+# panelapp_genes<-panelapp%>%group_by(gene_symbol,panel_name)%>%
+#   slice_max(confidence_level,with_ties = F)%>%ungroup()%>%
+#   group_by(gene_symbol)%>%
+#   summarize(panelapp_panels=paste0(panel_name,'(',confidence_level,')',collapse= '|'))
 
 # threshold to consider disorder unlikely, lets set it to -2
 unlikely_disorder_thresh=-1
 
 ui <- fluidPage(
-  br(),
-  theme = bslib::bs_theme(base_font = "Arial", bg = "white", fg = "black",heading_font = 'bold'),
-  tags$head(
-    tags$style(HTML(".main-header {text-align: center;} .subtitle {text-align: center;} .bootstrap-select.btn-group .dropdown-toggle { width: 300px !important; }"))
+  theme = bslib::bs_theme(
+    base_font = "Arial",
+    heading_font = "Lato",
+    bg = "#f7f7f7",
+    fg = "#333",
+    primary = "#4b3359"
   ),
-  titlePanel("Phenotype-Questionnaire Gene Panel Generator"),
+  tags$head(
+    tags$style(HTML("
+      .main-header {text-align: center;} 
+      .subtitle {text-align: center;} 
+      .bootstrap-select.btn-group .dropdown-toggle { width: 500px !important; }
+      .shiny-input-container { width: 500px !important; }
+       h1 { font-weight: bold !important; } /* Bold title header */
+      .nav.nav-tabs > li > a { font-weight: bold !important; } /* Bold tab headers */
+
+    "))
+  ),
+  br(),
+  titlePanel(
+    tags$h1(tags$i(class = "bi bi-file-earmark-text"), " Phenotype-Questionnaire Gene Panel Generator")
+  ),
   br(),
   tabsetPanel(
     tabPanel("Phenotype-questionnaire",
-    mainPanel(
-      
-      fluidRow(
-        column(10, offset = 0,
-               selectizeInput("main_pheno", "Select the main phenotype:",
-                              choices = NULL,
-                              multiple = T, width = '500px')
-        ),
-        # Added new selectizeInput for rejected phenotypes
-        column(10, offset = 0,
-               selectizeInput("additional_pheno", "Additional phenotypes present:",
-                              choices = NULL,
-                              multiple = T, width = '500px'),
-        ),
-        # Added new selectizeInput for rejected phenotypes
-        column(10, offset = 0,
-               selectizeInput("rejected_pheno", "Select the rejected phenotype:",
-                              choices = NULL,
-                              multiple = T, width = '500px')
-        )
-      ),
-      br(),
-      fluidRow(
-        column(4, offset = 4,
-               actionButton(inputId = "start_analysis", label = "Start Analysis", class = "btn-primary")
-        )
-      ),
-      br(),
-      fluidRow(
-        column(8, offset = 0,
-               #tags$h4("HPOs by Count"),
-               dataTableOutput("hpos_by_count_table")
-        )
-      ),
-      br()
-      )
-    ),# end of phenotype questionairre tab panel
-    tabPanel("Possible disorders",
              mainPanel(
                fluidRow(
-                 column(10, offset = 0,dataTableOutput("disorders_table"))
+                 column(10, 
+                        selectizeInput("main_pheno" ," Select the main phenotype:", choices = NULL, multiple = T)
+                 ),
+                 column(10, 
+                        selectizeInput("panelapp_panel" ," OR: Select PanelApp panels:", choices = unique(panelapp$panel_name), multiple = T)
+                 ),
+                 column(10, 
+                        selectizeInput("additional_pheno" ," Additional phenotypes present:", choices = NULL, multiple = T)
+                 ),
+                 column(10, 
+                        selectizeInput("rejected_pheno" ," Select the rejected phenotype:", choices = NULL, multiple = T)
+                 )
+               ),
+               br(),
+               fluidRow(
+                 column(4, offset = 4,
+                        actionButton(inputId = "start_analysis", label = tags$span(" Start Analysis"), class = "btn-primary")
+                 )
+               ),
+               br(),
+               fluidRow(
+                 column(8, dataTableOutput("hpos_by_count_table"))
+               ),
+               br()
+             )
+    ),
+    tabPanel("Possible disorders",
+             mainPanel(
+               br(),
+               fluidRow(
+                 column(10, dataTableOutput("disorders_table"))
                )
              )
     ),
     tabPanel("Panel genes",
              mainPanel(
                fluidRow(
-                 column(10, offset = 0,
-                   sliderInput("likelihood_threshold", "Likelihood Threshold:", -1, min = -5, max = 0,step = 0.1),
-                   dataTableOutput('panel_genes_table')
-                        )
+                 column(10, 
+                        sliderInput("likelihood_threshold", "Likelihood Threshold:", -1, min = -5, max = 0, step = 0.1),
+                        dataTableOutput('panel_genes_table')
+                 )
                )
              )
     )
   )
 )
 
+
 server <- function(input, output, session) {
   main_phenos_reactive <- reactiveVal()
+  panelapp_panels_reactive<-reactiveVal()
   rejected_phenos <- reactiveVal(c())
   additional_phenos_reactive <- reactiveVal(c())
   maybe_phenos_reactive<-reactiveVal(c())
@@ -114,24 +132,53 @@ server <- function(input, output, session) {
     updateSelectizeInput(session, "main_pheno", choices = unique(full_hpoa_df$hpo_id_name),server=TRUE)
   })
   
+  observe({
+    if (!is.null(input$main_pheno) && length(input$main_pheno) > 0) {
+      updateSelectizeInput(session, "panelapp_panel", selected = character(0))
+    }
+  })
+  
+  observe({
+    if (!is.null(input$panelapp_panel) && length(input$panelapp_panel) > 0) {
+      updateSelectizeInput(session, "main_pheno", selected = character(0))
+    }
+  })
   
   observeEvent(input$start_analysis, {
     updateActionButton(session, "start_analysis", label = "Resume Analysis")
     main_phenos <- input$main_pheno
     main_phenos_reactive(main_phenos)
+    
+    selected_panelapp_panels<-input$panelapp_panel
+    panelapp_panels_reactive(selected_panelapp_panels)
     modal_shown(FALSE)
   })
   
   all_phenos_data <- reactive({
     message('Running reactive: all_phenos_data')
     main_phenos <- main_phenos_reactive()
+    selected_panelapp_panels<-panelapp_panels_reactive()
+
+    if (is.null(main_phenos) & is.null(selected_panelapp_panels)) return(NULL)
     
-    if (is.null(main_phenos)) return(NULL)
+    # If generating panel using panelapp panels
+    if (!is.null(selected_panelapp_panels)){
+      
+      panelapp_genes<-panelapp%>%filter(panel_name%in%selected_panelapp_panels)%>%pull(gene_symbol)
+      panelapp_disorders<-disorder_to_gene%>%filter(gene_symbol%in%panelapp_genes)
+      all_disorders_with_main_phenos <- full_hpoa_df %>%
+        filter(disease_id %in% panelapp_disorders$disease_id) %>%
+        pull(disease_id) %>%
+        unique()
+    }
     
-    all_disorders_with_main_phenos <- full_hpoa_df %>%
-      filter(hpo_id_name %in% main_phenos) %>%
-      pull(disease_id) %>%
-      unique()
+    # If generating panel using main HPOs
+    if (!is.null(main_phenos)){
+      all_disorders_with_main_phenos <- full_hpoa_df %>%
+        filter(hpo_id_name %in% main_phenos) %>%
+        pull(disease_id) %>%
+        unique()
+    }
     
     all_phenos_from_disorders_with_main_phenos <- full_hpoa_df %>%
       filter(disease_id %in% all_disorders_with_main_phenos)
@@ -360,7 +407,8 @@ server <- function(input, output, session) {
       group_by(disease_id)%>%
       summarize(likelihood=sum(hpo_likelihood_score),confidence=sum(hpo_confidence_score))%>%
       # re-add the disease name
-      left_join(disorder_to_gene%>%group_by(disease_id,disease_name)%>%summarize(genes=paste0(gene_symbol,collapse=','))%>%ungroup())
+      left_join(disorder_to_gene%>%group_by(disease_id,disease_name)%>%
+                  summarize(genes=paste0(gene_symbol,collapse=','))%>%ungroup())
     return(disorders_with_likelihood)
   }
   
@@ -368,6 +416,7 @@ server <- function(input, output, session) {
   disorders_data_reactive <- reactive({
     message('Running reactive: disorders_data_reactive')
     all_phenos_data <- all_phenos_data()
+    
     if (is.null(all_phenos_data)) return(NULL)
     disorders_with_likelihood<-update_disorders_likelihood()  
     disorders_with_likelihood<-disorders_with_likelihood%>%
@@ -388,28 +437,77 @@ server <- function(input, output, session) {
     message('Running reactive: panel_genes_reactive')
     if (is.null(all_phenos_data)) return(NULL)
     disorders_with_likelihood<-update_disorders_likelihood()
+    selected_panelapp_panels<-panelapp_panels_reactive()
+    disorder_to_gene_for_table<-disorder_to_gene
+    panelapp_genes_not_in_disorder_to_gene_table<-NULL
+    if (!is.null(selected_panelapp_panels)){
+      # first add the panelapp confidence to all the genes
+      disorder_to_gene_for_table<-disorder_to_gene_for_table%>%
+        left_join(panelapp%>%
+                    filter(panel_name%in%selected_panelapp_panels)%>%
+                    select(gene_symbol,panelapp_cat=confidence_level))
+      panelapp_genes<-panelapp%>%filter(panel_name%in%selected_panelapp_panels)%>%pull(gene_symbol)
+      # add panelapp genes not in disorder to gene genes
+      panelapp_genes_not_in_disorder_to_gene_table<-panelapp%>%
+        filter(panel_name%in%selected_panelapp_panels)%>%
+        filter(!gene_symbol%in%disorder_to_gene_for_table$gene_symbol)%>%
+        mutate(disease_id=glue('PANELAPP:{panel_id}'),
+               disease_name=glue('{panel_name}'),
+               likelihood=as.numeric(confidence_level)-2.5,
+               confidence=as.numeric(confidence_level),
+               panelapp_cat=as.numeric(confidence_level))%>%
+        select(disease_id,gene_symbol,disease_name,likelihood,confidence)
+      disorder_to_gene_for_table<-disorder_to_gene_for_table%>%filter(gene_symbol%in%panelapp_genes)
+    }
     # filter by user selected threshold
-    likely_disorders<-disorders_with_likelihood%>%filter(likelihood>input$likelihood_threshold)%>%select(-genes)
-    panel_genes_table<-disorder_to_gene%>%
-      inner_join(likely_disorders)%>%
-      mutate(disease_id_name=glue('{disease_id}:{disease_name}'))%>%
-      group_by(gene_symbol)%>%
-      summarize(disorders=paste0(disease_id_name,collapse=' | '),
-                likelihood=round(max(likelihood),3),
-                confidence=round(max(confidence),3))
+    likely_disorders<-disorders_with_likelihood%>%
+      filter(likelihood>input$likelihood_threshold)%>%select(-genes)
+    # if no selecte panelapp panel
+    if (is.null(panelapp_genes_not_in_disorder_to_gene_table)){
+      panel_genes_table<-disorder_to_gene_for_table%>%
+        inner_join(likely_disorders)%>%
+        mutate(disease_id_name=glue('{disease_id}:{disease_name}'))%>%
+        group_by(gene_symbol)%>%
+        summarize(disorders=paste0(disease_id_name,collapse=' | '),
+                  likelihood=round(max(likelihood),3),
+                  confidence=round(max(confidence),3))
+    }else{
+    # if a panelapp panel was selected, add the panelapp category to each gene
+      panel_genes_table<-disorder_to_gene_for_table%>%
+        inner_join(likely_disorders)%>%
+        bind_rows(panelapp_genes_not_in_disorder_to_gene_table%>%
+                    filter(likelihood>input$likelihood_threshold))%>%
+        mutate(disease_id_name=glue('{disease_id}:{disease_name}'))%>%
+        group_by(gene_symbol)%>%
+        summarize(disorders=paste0(disease_id_name,collapse=' | '),
+                  likelihood=round(max(likelihood),3),
+                  confidence=round(max(confidence),3),
+                  panelapp_cat=max(panelapp_cat))
+    }
+    
+    
     panel_genes_table
   })
   
   # Render the disorders table
   output$disorders_table <- DT::renderDataTable(
-    DT::datatable(disorders_data_reactive()),
+    disorders_data_reactive(),
+    extensions = 'Buttons',
     options=list(
-      filter = list(position = 'top')
+      filter = 'top',
+      dom = 'Bfrtipl',
+      buttons = c('copy', 'csv', 'excel')
     )
   )
-  output$panel_genes_table<-renderDataTable({
-    panel_genes_reactive()
-  })
+  output$panel_genes_table<-renderDataTable(
+    panel_genes_reactive(),
+    extensions = 'Buttons',
+    options=list(
+      filter = 'top',
+      dom = 'Bfrtipl',
+      buttons = c('copy', 'csv', 'excel')
+    )
+  )
 }
 
 
