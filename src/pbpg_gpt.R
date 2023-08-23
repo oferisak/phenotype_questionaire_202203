@@ -13,6 +13,8 @@ load.project()
 # full_hpoa_df<-parse_hpo_hpoa_db()
 # save(full_hpoa_df,file='/media/SSD/Bioinformatics/Projects/phenotype_questionaire_202203/data/preprocessed_data.RData')
 
+# TODO: modify the questions order to be according to the total frequency in the different disorders (more frequent will be asked before)
+
 # Read the test table
 load('/media/SSD/Bioinformatics/Projects/phenotype_questionaire_202203/data/preprocessed_data.RData')
 disorder_to_gene<-create_disorder_to_gene_table()
@@ -21,8 +23,8 @@ message('Parsing panelapp panels..')
 panelapp<-readr::read_delim('./data/panelapp_db_2023-08-17.csv.gz')
 
 # collect only disorders with the genes in the selected panel
-panelapp_id<-49
-panelapp_genes<-panelapp%>%filter(panel_id==panelapp_id)%>%pull(gene_symbol)
+# panelapp_id<-49
+# panelapp_genes<-panelapp%>%filter(panel_id==panelapp_id)%>%pull(gene_symbol)
 # setdiff(panelapp_genes,disorder_to_gene$gene_symbol)
 
 #panelapp_disorders<-disorder_to_gene%>%filter(gene_symbol%in%panelapp_genes)
@@ -74,7 +76,10 @@ ui <- fluidPage(
                         selectizeInput("panelapp_panel" ,strong("OR: Select PanelApp Panels:"), choices = unique(panelapp$panel_name), multiple = T)
                  ),
                  column(10, 
-                        selectizeInput("additional_pheno" ,"Possible Phenotypes Present:", choices = NULL, multiple = T)
+                        selectizeInput("additional_pheno" ,"Additional Phenotypes Present:", choices = NULL, multiple = T)
+                 ),
+                 column(10, 
+                        selectizeInput("possible_pheno" ,"Possible Phenotypes:", choices = NULL, multiple = T)
                  ),
                  column(10, 
                         selectizeInput("rejected_pheno" ,"Rejected Phenotypes:", choices = NULL, multiple = T)
@@ -128,17 +133,25 @@ ui <- fluidPage(
 
 
 server <- function(input, output, session) {
+  # server: define reactive variables ####
   main_phenos_reactive <- reactiveVal()
+  additional_phenos_present_reactive <- reactiveVal(c())
+  additional_phenos_possible_reactive <- reactiveVal(c())
   panelapp_panels_reactive<-reactiveVal()
-  rejected_phenos <- reactiveVal(c())
-  additional_phenos_reactive <- reactiveVal(c())
   maybe_phenos_reactive<-reactiveVal(c())
+  rejected_phenos <- reactiveVal(c())
   rejected_disorders <- reactiveVal(c())
   top_obligate_pheno <- reactiveVal()
   modal_shown <- reactiveVal(FALSE)
+  questions_answered <- reactiveVal(0)
   
+  # server: update main phenotypes input ####
   observe({
     updateSelectizeInput(session, "main_pheno", choices = unique(full_hpoa_df$hpo_id_name),server=TRUE)
+  })
+  
+  observe({
+    updateSelectizeInput(session, "additional_pheno", choices = unique(full_hpoa_df$hpo_id_name),server=TRUE)
   })
   
   observe({
@@ -153,17 +166,20 @@ server <- function(input, output, session) {
     }
   })
   
-  # observer - clicking start analysis button ####
+  # server: observer: clicking start analysis button ####
   observeEvent(input$start_analysis, {
     updateActionButton(session, "start_analysis", label = "Resume Analysis")
     main_phenos <- input$main_pheno
     main_phenos_reactive(main_phenos)
+    additional_phenos_present<-input$additional_pheno
+    additional_phenos_present_reactive(additional_phenos_present)
     
     selected_panelapp_panels<-input$panelapp_panel
     panelapp_panels_reactive(selected_panelapp_panels)
     modal_shown(FALSE)
   })
   
+  # server: reactive - all_phenos_data ####
   all_phenos_data <- reactive({
     message('Running reactive: all_phenos_data')
     main_phenos <- main_phenos_reactive()
@@ -199,14 +215,17 @@ server <- function(input, output, session) {
     )
   })
   
-  # Reactive expression for hpos_by_count
+  # server: reactive - hpos_by_count_reactive ####
   hpos_by_count_reactive <- reactive({
     message('Running reactive: hpos_by_count_reactive')
     phenos_data <- all_phenos_data()
     if (is.null(phenos_data)) return(NULL)
 
     # Exclude all ancestors of phenos that the user said are present or maybe present in the patient
-    excluded_due_to_addition <- c(phenos_data$main_phenos, additional_phenos_reactive(),maybe_phenos_reactive())
+    excluded_due_to_addition <- c(phenos_data$main_phenos, 
+                                  additional_phenos_present_reactive(),
+                                  additional_phenos_possible_reactive(),
+                                  maybe_phenos_reactive())
     excluded_due_to_addition_ancestors<-NULL
     for (excluded_pheno_id_term in excluded_due_to_addition){
       excluded_pheno_id<-stringr::str_extract(excluded_pheno_id_term,'HP:\\d+')
@@ -215,7 +234,9 @@ server <- function(input, output, session) {
     }
     
     # Exclude all descendants of phenos that the user said are present in the patient
-    excluded_due_to_addition <- c(phenos_data$main_phenos, additional_phenos_reactive())
+    excluded_due_to_addition <- c(phenos_data$main_phenos, 
+                                  additional_phenos_present_reactive(),
+                                  additional_phenos_possible_reactive())
     excluded_due_to_addition_descendants<-NULL
     for (excluded_pheno_id_term in excluded_due_to_addition){
       excluded_pheno_id<-stringr::str_extract(excluded_pheno_id_term,'HP:\\d+')
@@ -243,7 +264,7 @@ server <- function(input, output, session) {
     unlikely_disorders<-disorders_with_likelihood%>%filter(likelihood<=unlikely_disorder_thresh)%>%pull(disease_id)
     message(glue('There are currently {length(unlikely_disorders)}/{nrow(disorders_with_likelihood)} unlikely disorders..'))
     # Modify to exclude phenos in main and additional_pheno inputs
-    #excluded_phenos <- c(main_phenos_ancestors, additional_phenos_reactive(),maybe_phenos_reactive(),rejected_phenos())
+    #excluded_phenos <- c(main_phenos_ancestors, additional_phenos_present_reactive(),maybe_phenos_reactive(),rejected_phenos())
     hpos_from_disorders_that_are_not_in_main <- phenos_data$all_phenos_from_disorders_with_main_phenos %>%
       #filter(!(disease_id %in% rejected_disorders())) %>%
       filter(!(disease_id %in% unlikely_disorders)) %>%
@@ -251,17 +272,20 @@ server <- function(input, output, session) {
       filter(!(hpo_id_name %in% excluded_due_to_addition_descendants))%>%
       filter(!(hpo_id_name %in% excluded_due_to_rejection_descendants))
     
-    # for each ancestor, collect all final descendants
-    final_descendants<-hpos_from_disorders_that_are_not_in_main%>%
-      filter(is_ancestor==TRUE)%>%
-      group_by(hpo_id_name)%>%
-      summarize(final_desc=paste0(unique(ancestor_of)[order(unique(ancestor_of))],collapse='<br>'))
 
+    final_descendants <- as.data.table(hpos_from_disorders_that_are_not_in_main %>%
+                                         filter(is_ancestor == TRUE) %>%
+                                         group_by(hpo_id, hpo_id_name) %>%
+                                         summarize(final_desc = paste0(unique(ancestor_of)[order(unique(ancestor_of))], collapse='<br>'),
+                                                   num_final_desc = length(unique(ancestor_of))))
+    
     # final_descendants<-NULL # 
     hpos_by_count <- hpos_from_disorders_that_are_not_in_main %>%
+      #filter(!is_ancestor)%>%
       filter(frequency_cat %in% c('obligate','very_frequent','frequent','unknown')) %>%
+      #filter(frequency_cat %in% c('obligate','very_frequent')) %>%
       group_by(hpo_id_name) %>%
-      summarize(n = n())%>%
+      summarize(n = length(unique(disease_id)))%>%
       arrange(desc(n))
     
     list(hpos_by_count=hpos_by_count,
@@ -307,8 +331,8 @@ server <- function(input, output, session) {
     }
     if (num_of_phenos_that_are_obligated > 0 & !modal_shown()) {
       question_text<-ifelse(top_pheno_final_descendants_text=='' | nchar(top_pheno_final_descendants_text)>800,
-                            glue('There are {nrow(hpos_by_count)} more phenotypes from {length(disorders_remaining)} different disorders to ask about.<br>Do you want to include disorders that have: {top_pheno %>% pull(hpo_id_name)}'),
-                            glue("There are {nrow(hpos_by_count)} more phenotypes from {length(disorders_remaining)} different disorders to ask about.<br>Do you want to include disorders that have: {top_pheno %>% pull(hpo_id_name)}<br>Specifically:<br>{top_pheno_final_descendants_text}"))
+                            glue('There are {nrow(hpos_by_count)} more phenotypes from {length(disorders_remaining)} different disorders to ask about.Does your patient have:<br><b>{top_pheno %>% pull(hpo_id_name)}</b><br>'),
+                            glue("There are {nrow(hpos_by_count)} more phenotypes from {length(disorders_remaining)} different disorders to ask about.Does your patient have:<br><b>{top_pheno %>% pull(hpo_id_name)}</b><br>Specifically:<br>{top_pheno_final_descendants_text}<br>"))
       print(question_text)
       showModal(modalDialog(
         title = "Confirm Phenotype",
@@ -316,10 +340,12 @@ server <- function(input, output, session) {
         HTML(question_text),
         footer = tagList(
           actionButton("yes_button", "Yes"),
-          actionButton("maybe_button", "Maybe"),
+          actionButton("possible_button", "Possible"),
+          actionButton("be_more_specific_button", "Be more specific"),
           actionButton("no_button", "No"),
           actionButton("stop_button", "Finish")
-        )
+        ),
+        div(HTML(glue('<br>You have answered {questions_answered()} questions so far.')),style = "font-size:15px;")
       ))
       modal_shown(TRUE)
     } else {
@@ -332,31 +358,45 @@ server <- function(input, output, session) {
     }
     
   })
-  
+  # server: observer - stop_button ####
   observeEvent(input$stop_button, {
     modal_shown(TRUE)
     removeModal()  
 
   })
-  
+  # server: observer - yes_button ####
   observeEvent(input$yes_button, {
     modal_shown(FALSE)
+    questions_answered(questions_answered() + 1)
     removeModal()
-    additional_phenos <- c(additional_phenos_reactive(), top_obligate_pheno()$hpo_id_name)
-    additional_phenos_reactive(additional_phenos)
+    additional_phenos <- c(additional_phenos_present_reactive(), top_obligate_pheno()$hpo_id_name)
+    additional_phenos_present_reactive(additional_phenos)
     updateSelectizeInput(session, inputId = 'additional_pheno', choices = unique(full_hpoa_df$hpo_id_name),selected = additional_phenos,server=TRUE) # Update additional_pheno input
   })
   
+  # server: observer - possible_button ####
+  observeEvent(input$possible_button, {
+    modal_shown(FALSE)
+    questions_answered(questions_answered() + 1)
+    removeModal()
+    possible_phenos <- c(additional_phenos_possible_reactive(), top_obligate_pheno()$hpo_id_name)
+    additional_phenos_possible_reactive(possible_phenos)
+    updateSelectizeInput(session, inputId = 'possible_pheno', choices = unique(full_hpoa_df$hpo_id_name),selected = possible_phenos,server=TRUE) # Update additional_pheno input
+  })
+  # server: observer - no_button ####
   observeEvent(input$no_button, {
     modal_shown(FALSE)
+    questions_answered(questions_answered() + 1)
     removeModal()
     phenos_data <- all_phenos_data()
     rejected_phenos_current <- c(rejected_phenos(), top_obligate_pheno()$hpo_id_name)
     rejected_phenos(rejected_phenos_current)
   })
   
-  observeEvent(input$maybe_button, {
+  # server: observer - be_more_specific_button ####
+  observeEvent(input$be_more_specific_button, {
     modal_shown(FALSE)
+    questions_answered(questions_answered() + 1)
     removeModal()
     maybe_phenos <- c(maybe_phenos_reactive(), top_obligate_pheno()$hpo_id_name)
     maybe_phenos_reactive(maybe_phenos)
@@ -400,7 +440,7 @@ server <- function(input, output, session) {
   update_disorders_likelihood<-function(){
     all_phenos_data <- all_phenos_data()
     main_phen<-main_phenos_reactive()
-    additional_phen<-additional_phenos_reactive()
+    additional_phen<-additional_phenos_present_reactive()
     rejected_phen <- rejected_phenos()
     disorders_with_likelihood<-all_phenos_data$all_phenos_from_disorders_with_main_phenos%>%
       mutate(is_rejected=ifelse(hpo_id_name %in% rejected_phen,TRUE,FALSE),
