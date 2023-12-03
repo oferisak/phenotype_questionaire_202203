@@ -53,7 +53,9 @@ parse_ratio_column <- function(df, column_name) {
       split_values <- strsplit(ratio_strings[i], "/")[[1]]
       x_values[i] <- as.numeric(split_values[1])
       y_values[i] <- as.numeric(split_values[2])
+      # if the numebr of patients is less than 10 change the frequency to be NA
       ratio_values[i] <- x_values[i] / y_values[i]
+      if (y_values[i]<=10){ratio_values[i]<-NA}
     }
   }
   

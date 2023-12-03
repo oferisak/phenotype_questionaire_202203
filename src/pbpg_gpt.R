@@ -1,10 +1,11 @@
 
-version = 0.22
+version = 0.23
 library(shiny)
 library(shinyWidgets)
 library(ProjectTemplate)
 library(ontologyIndex)
 library(bslib)
+library(data.table)
 setwd('..')
 data(hpo)
 load.project()
@@ -13,10 +14,12 @@ load.project()
 # full_hpoa_df<-parse_hpo_hpoa_db()
 # save(full_hpoa_df,file='/media/SSD/Bioinformatics/Projects/phenotype_questionaire_202203/data/preprocessed_data.RData')
 
-# TODO: modify the questions order to be according to the total frequency in the different disorders (more frequent will be asked before)
+# Tried: 
+## modify the questions order to be according to the total frequency in the different disorders (more frequent will be asked before) - 
+##  - did not result in a major improvement in the number of questions required
 
 # Read the test table
-load('/media/SSD/Bioinformatics/Projects/phenotype_questionaire_202203/data/preprocessed_data.RData')
+#load('/media/SSD/Bioinformatics/Projects/phenotype_questionaire_202203/data/preprocessed_data.RData')
 disorder_to_gene<-create_disorder_to_gene_table()
 # Read panelapp panels
 message('Parsing panelapp panels..')
@@ -35,7 +38,7 @@ panelapp<-readr::read_delim('./data/panelapp_db_2023-08-17.csv.gz')
 #   summarize(panelapp_panels=paste0(panel_name,'(',confidence_level,')',collapse= '|'))
 
 # threshold to consider disorder unlikely, lets set it to -2
-unlikely_disorder_thresh=-1
+#unlikely_disorder_thresh=-1
 
 ui <- fluidPage(
   theme = bslib::bs_theme(
@@ -69,6 +72,19 @@ ui <- fluidPage(
              mainPanel(
                br(),
                fluidRow(
+                 column(10,
+                        div(style = "max-width: 500px;",  # You can adjust the max-width value as needed
+                               sliderInput(inputId = "analysis_depth", 
+                                           label = strong("Analysis depth"),
+                                           value=-1, max = -0.1, min=-2, step = 0.1),
+                               div(style = "display: flex; justify-content: space-between; font-size:10px;",
+                                   tags$span("(More questions | More specific)"),
+                                   tags$span("(Less questions | More sensitive)")
+                               )
+                 ))
+               ),
+               br(),
+               fluidRow(
                  column(10, 
                         selectizeInput("main_pheno" ,strong("Select the Main Phenotypes:"), choices = NULL, multiple = T)
                  ),
@@ -87,9 +103,11 @@ ui <- fluidPage(
                ),
                br(),
                fluidRow(
-                 column(4, offset = 4,
+                 column(4,
                         actionButton(inputId = "start_analysis", label = tags$span(" Start Analysis"), class = "btn-primary")
-                 )
+                 ),
+                 column(6,
+                        textOutput("questionsAnsweredText") )
                ),
                br(),
                fluidRow(
@@ -178,6 +196,10 @@ server <- function(input, output, session) {
     panelapp_panels_reactive(selected_panelapp_panels)
     modal_shown(FALSE)
   })
+  # server - output - number of questions answered counter ####
+  output$questionsAnsweredText <- renderText({
+    paste("You have answered", questions_answered(), "questions so far.")
+  })
   
   # server: reactive - all_phenos_data ####
   all_phenos_data <- reactive({
@@ -260,8 +282,8 @@ server <- function(input, output, session) {
     }
     
     disorders_with_likelihood<-update_disorders_likelihood()
-    disorders_remaining<-disorders_with_likelihood%>%filter(likelihood>unlikely_disorder_thresh)%>%pull(disease_id)
-    unlikely_disorders<-disorders_with_likelihood%>%filter(likelihood<=unlikely_disorder_thresh)%>%pull(disease_id)
+    disorders_remaining<-disorders_with_likelihood%>%filter(likelihood>input$analysis_depth)%>%pull(disease_id)
+    unlikely_disorders<-disorders_with_likelihood%>%filter(likelihood<=input$analysis_depth)%>%pull(disease_id)
     message(glue('There are currently {length(unlikely_disorders)}/{nrow(disorders_with_likelihood)} unlikely disorders..'))
     # Modify to exclude phenos in main and additional_pheno inputs
     #excluded_phenos <- c(main_phenos_ancestors, additional_phenos_present_reactive(),maybe_phenos_reactive(),rejected_phenos())
@@ -272,7 +294,7 @@ server <- function(input, output, session) {
       filter(!(hpo_id_name %in% excluded_due_to_addition_descendants))%>%
       filter(!(hpo_id_name %in% excluded_due_to_rejection_descendants))
     
-
+    
     final_descendants <- as.data.table(hpos_from_disorders_that_are_not_in_main %>%
                                          filter(is_ancestor == TRUE) %>%
                                          group_by(hpo_id, hpo_id_name) %>%
@@ -285,7 +307,7 @@ server <- function(input, output, session) {
       filter(frequency_cat %in% c('obligate','very_frequent','frequent','unknown')) %>%
       #filter(frequency_cat %in% c('obligate','very_frequent')) %>%
       group_by(hpo_id_name) %>%
-      summarize(n = length(unique(disease_id)))%>%
+      summarize(n = length(unique(disease_id)),freq_sum=sum(frequency_numeric,na.rm = T))%>%
       arrange(desc(n))
     
     list(hpos_by_count=hpos_by_count,
@@ -549,7 +571,7 @@ server <- function(input, output, session) {
     }
     glue('{normalized_phenos}_{Sys.Date()}_{suffix}')
   }
-  # output - download disorders table button ####
+  # server: output - download disorders table button ####
   output$download_disorders <- downloadHandler(
     filename = get_filename('disorders'),
     content = function(file) {
@@ -557,7 +579,7 @@ server <- function(input, output, session) {
       write.table(data, file,row.names = F,sep = '\t')
     }
   )
-  # output - download panel genes table button ####
+  # server: output - download panel genes table button ####
   output$download_panel_genes <- downloadHandler(
     filename = get_filename('genes'),
     content = function(file) {
