@@ -34,7 +34,7 @@ hpo_frequencies<-list('HP:0040284'=0.025,
 #hpo_frequencies<-data.frame(hpo_frequencies)
 
 
-parse_ratio_column <- function(df, column_name) {
+parse_ratio_column <- function(df, column_name,min_num_o_patients_for_freq=10) {
   # Extract the specified column
   ratio_strings <- df[[column_name]]
   
@@ -53,9 +53,9 @@ parse_ratio_column <- function(df, column_name) {
       split_values <- strsplit(ratio_strings[i], "/")[[1]]
       x_values[i] <- as.numeric(split_values[1])
       y_values[i] <- as.numeric(split_values[2])
-      # if the numebr of patients is less than 10 change the frequency to be NA
+      # if the numebr of patients is less than min_num_o_patients_for_freq change the frequency to be NA
       ratio_values[i] <- x_values[i] / y_values[i]
-      if (y_values[i]<=10){ratio_values[i]<-NA}
+      if (y_values[i]<=min_num_o_patients_for_freq){ratio_values[i]<-NA}
     }
   }
   

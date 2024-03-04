@@ -19,7 +19,7 @@ load.project()
 ##  - did not result in a major improvement in the number of questions required
 
 # Read the test table
-#load('/media/SSD/Bioinformatics/Projects/phenotype_questionaire_202203/data/preprocessed_data.RData')
+load('/media/SSD/Bioinformatics/Projects/phenotype_questionaire_202203/data/preprocessed_data.RData')
 disorder_to_gene<-create_disorder_to_gene_table()
 # Read panelapp panels
 message('Parsing panelapp panels..')
