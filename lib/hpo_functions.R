@@ -122,6 +122,15 @@ parse_hpo_hpoa_db<-function(){
       frequency_cat=='occasional'~0.17,
       frequency_cat=='obligate'~1,
       frequency_cat=='unknown'~0.55
+    ),
+    frequency_bayes=case_when(
+      frequency_cat=='very_rare'~0.025,
+      frequency_cat=='excluded'~0.001,
+      frequency_cat=='frequent'~0.55,
+      frequency_cat=='very_frequent'~0.9,
+      frequency_cat=='occasional'~0.17,
+      frequency_cat=='obligate'~0.999,
+      frequency_cat=='unknown'~0.2
     ))
   
   
@@ -313,7 +322,8 @@ depracated_parse_hpo_hpoa_db<-function(){
   
   # Add score for frequency
   hpoa_df<-hpoa_df%>%
-    mutate(frequency_score=case_when(
+    mutate(
+      frequency_score=case_when(
       frequency_cat=='very_rare'~0.01,
       frequency_cat=='excluded'~-5,
       frequency_cat=='frequent'~0.8,
@@ -321,7 +331,8 @@ depracated_parse_hpo_hpoa_db<-function(){
       frequency_cat=='occasional'~0.3,
       frequency_cat=='obligate'~1,
       frequency_cat=='unknown'~0.1
-    ))
+    )
+    )
   # remove duplicates, for each disease (disease_id) take the one with the highest frequency 
   # !! TODO !! need to consider if this is the best way
   hpoa_df<-hpoa_df%>%

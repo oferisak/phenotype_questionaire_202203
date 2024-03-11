@@ -10,9 +10,11 @@ setwd('..')
 data(hpo)
 load.project()
 
+# TODO: Add for each gene - what are the supporting and non supporting phenotypes given
+
 # prepare the data and save it
-# full_hpoa_df<-parse_hpo_hpoa_db()
-# save(full_hpoa_df,file='/media/SSD/Bioinformatics/Projects/phenotype_questionaire_202203/data/preprocessed_data.RData')
+#full_hpoa_df<-parse_hpo_hpoa_db()
+#save(full_hpoa_df,file='/media/SSD/Bioinformatics/Projects/phenotype_questionaire_202203/data/preprocessed_data.RData')
 
 # Tried: 
 ## modify the questions order to be according to the total frequency in the different disorders (more frequent will be asked before) - 
@@ -24,6 +26,10 @@ disorder_to_gene<-create_disorder_to_gene_table()
 # Read panelapp panels
 message('Parsing panelapp panels..')
 panelapp<-readr::read_delim('./data/panelapp_db_2023-08-17.csv.gz')
+
+bayes_freq_for_unknown<-0.3
+
+message(glue('SETUP: defined frequency for unknown phenotypes: {bayes_freq_for_unknown}'))
 
 ui <- fluidPage(
   theme = bslib::bs_theme(
@@ -59,14 +65,14 @@ ui <- fluidPage(
                fluidRow(
                  column(10,
                         div(style = "max-width: 500px;",  # You can adjust the max-width value as needed
-                               sliderInput(inputId = "analysis_depth", 
-                                           label = strong("Analysis depth"),
-                                           value=-1, max = -0.1, min=-2, step = 0.1),
-                               div(style = "display: flex; justify-content: space-between; font-size:10px;",
-                                   tags$span("(More questions | More specific)"),
-                                   tags$span("(Less questions | More sensitive)")
-                               )
-                 ))
+                            sliderInput(inputId = "analysis_depth", 
+                                        label = strong("Analysis depth"),
+                                        value=0.1, max = 1, min=0, step = 0.01),
+                            div(style = "display: flex; justify-content: space-between; font-size:10px;",
+                                tags$span("(More questions | More specific)"),
+                                tags$span("(Less questions | More sensitive)")
+                            )
+                        ))
                ),
                br(),
                fluidRow(
@@ -110,7 +116,7 @@ ui <- fluidPage(
                ),
                br(),
                fluidRow(
-                 column(10,dataTableOutput("disorders_table"))
+                 dataTableOutput("disorders_table")
                )
              )
     ),
@@ -119,7 +125,7 @@ ui <- fluidPage(
              mainPanel(
                br(),
                fluidRow(
-                 column(10,sliderInput("likelihood_threshold", "Likelihood Threshold:", -1, min = -5, max = 0, step = 0.1))
+                 column(10,sliderInput("likelihood_threshold", "Likelihood Threshold:", 0.01, min = 0, max = 0.5, step = 0.005))
                ),
                br(),
                fluidRow(
@@ -127,7 +133,7 @@ ui <- fluidPage(
                ),
                br(),
                fluidRow(
-                 column(10,dataTableOutput('panel_genes_table'))
+                 dataTableOutput('panel_genes_table')
                )
              )
     )
@@ -142,6 +148,8 @@ server <- function(input, output, session) {
   additional_phenos_possible_reactive <- reactiveVal(c())
   panelapp_panels_reactive<-reactiveVal()
   maybe_phenos_reactive<-reactiveVal(c())
+  initial_disease_priors<-reactiveVal(c())
+  added_pheno<-reactiveVal()
   rejected_phenos <- reactiveVal(c())
   rejected_disorders <- reactiveVal(c())
   top_obligate_pheno <- reactiveVal()
@@ -169,14 +177,16 @@ server <- function(input, output, session) {
     }
   })
   
-  # server: observer: clicking start analysis button ####
+  # server: observer: start analysis button ####
   observeEvent(input$start_analysis, {
     updateActionButton(session, "start_analysis", label = "Resume Analysis")
     main_phenos <- input$main_pheno
     main_phenos_reactive(main_phenos)
+    # initial_disease_priors_vector<-calc_initial_disease_priors()
+    # initial_disease_priors(initial_disease_priors_vector)
+    #message(glue('there are {length(initial_disease_priors_vector)} intial diseases'))
     additional_phenos_present<-input$additional_pheno
     additional_phenos_present_reactive(additional_phenos_present)
-    
     selected_panelapp_panels<-input$panelapp_panel
     panelapp_panels_reactive(selected_panelapp_panels)
     modal_shown(FALSE)
@@ -185,13 +195,23 @@ server <- function(input, output, session) {
   output$questionsAnsweredText <- renderText({
     paste("You have answered", questions_answered(), "questions so far.")
   })
+  # server: reactive - intial_disease_priors ####
+  calc_initial_disease_priors<-reactive({
+    message('Running reactive: calc_initial_disease_priors')
+    phenos_data <- all_phenos_data()
+    print(phenos_data)
+    initial_diseases<-phenos_data$all_phenos_from_disorders_with_main_phenos%>%
+      pull(disease_id)%>%unique()
+    initial_diseases_priors<-data.frame(disease_id=initial_diseases,prior_prob=rep(1/length(initial_diseases),length(initial_diseases)))
+    initial_diseases_priors
+  })
   
   # server: reactive - all_phenos_data ####
   all_phenos_data <- reactive({
     message('Running reactive: all_phenos_data')
     main_phenos <- main_phenos_reactive()
     selected_panelapp_panels<-panelapp_panels_reactive()
-
+    
     if (is.null(main_phenos) & is.null(selected_panelapp_panels)) return(NULL)
     
     # If generating panel using panelapp panels
@@ -214,7 +234,16 @@ server <- function(input, output, session) {
     }
     
     all_phenos_from_disorders_with_main_phenos <- full_hpoa_df %>%
-      filter(disease_id %in% all_disorders_with_main_phenos)
+      filter(disease_id %in% all_disorders_with_main_phenos)%>%
+      mutate(frequency_bayes=ifelse(frequency_cat=='unknown',bayes_freq_for_unknown,frequency_bayes)) 
+    
+    complete_grid <- expand.grid(
+      disease_id = unique(all_phenos_from_disorders_with_main_phenos$disease_id),
+      hpo_id_name = unique(all_phenos_from_disorders_with_main_phenos$hpo_id_name)
+    )
+    complete_grid<-complete_grid%>%mutate(disease_id=as.character(disease_id),hpo_id_name=as.character(hpo_id_name))
+    all_phenos_from_disorders_with_main_phenos<-complete_grid%>%left_join(all_phenos_from_disorders_with_main_phenos)%>%
+      mutate(frequency_bayes=ifelse(is.na(frequency_bayes),0.05,frequency_bayes))
     
     list(
       main_phenos = main_phenos,
@@ -227,7 +256,7 @@ server <- function(input, output, session) {
     message('Running reactive: hpos_by_count_reactive')
     phenos_data <- all_phenos_data()
     if (is.null(phenos_data)) return(NULL)
-
+    
     # Exclude all ancestors of phenos that the user said are present or maybe present in the patient
     excluded_due_to_addition <- c(phenos_data$main_phenos, 
                                   additional_phenos_present_reactive(),
@@ -266,9 +295,12 @@ server <- function(input, output, session) {
       excluded_due_to_rejection_descendants<-unique(c(excluded_due_to_rejection_descendants,excluded_pheno_descendants))
     }
     
-    disorders_with_likelihood<-update_disorders_likelihood()
-    disorders_remaining<-disorders_with_likelihood%>%filter(likelihood>input$analysis_depth)%>%pull(disease_id)
-    unlikely_disorders<-disorders_with_likelihood%>%filter(likelihood<=input$analysis_depth)%>%pull(disease_id)
+    disorders_with_likelihood<-update_disorders_likelihood_bayes()
+    # set the threshold so that all the disorders below the analysis_depth quantile will be considered unlikely and will not be asked about
+    likelihood_thresh<-quantile(disorders_with_likelihood$likelihood,probs=input$analysis_depth)
+    message(glue('likelihood thresh: {likelihood_thresh}'))
+    disorders_remaining<-disorders_with_likelihood%>%filter(likelihood>=likelihood_thresh)%>%pull(disease_id)
+    unlikely_disorders<-disorders_with_likelihood%>%filter(likelihood<likelihood_thresh)%>%pull(disease_id)
     message(glue('There are currently {length(unlikely_disorders)}/{nrow(disorders_with_likelihood)} unlikely disorders..'))
     # Modify to exclude phenos in main and additional_pheno inputs
     #excluded_phenos <- c(main_phenos_ancestors, additional_phenos_present_reactive(),maybe_phenos_reactive(),rejected_phenos())
@@ -277,8 +309,8 @@ server <- function(input, output, session) {
       filter(!(disease_id %in% unlikely_disorders)) %>%
       filter(!(hpo_id_name %in% excluded_due_to_addition_ancestors))%>%
       filter(!(hpo_id_name %in% excluded_due_to_addition_descendants))%>%
-      filter(!(hpo_id_name %in% excluded_due_to_rejection_descendants))
-    
+      filter(!(hpo_id_name %in% excluded_due_to_rejection_descendants))%>%
+      filter(!frequency_cat=='unknown')
     
     final_descendants <- as.data.table(hpos_from_disorders_that_are_not_in_main %>%
                                          filter(is_ancestor == TRUE) %>%
@@ -299,7 +331,7 @@ server <- function(input, output, session) {
          final_descendants=final_descendants,
          disorders_remaining=disorders_remaining)
   })
-
+  
   # Observer to update the choices of rejected phenotypes selectizeInput
   observe({
     rejected <- rejected_phenos()
@@ -323,10 +355,9 @@ server <- function(input, output, session) {
       slice_max(order_by = n, n = 1, with_ties = F)
     
     top_obligate_pheno(top_pheno)
-    #print(top_obligate_pheno())
+    
     top_pheno_final_descendants<-hpos_by_count_reactive_output$final_descendants
     # if the hpo in question is not an ancestor of anything
-    #print(top_pheno_final_descendants)
     if (!is.null(top_pheno_final_descendants)){
       is_final_descendant<-!(top_obligate_pheno()$hpo_id_name %in% (top_pheno_final_descendants%>%pull(hpo_id_name)))
       top_pheno_final_descendants_text<-ifelse(is_final_descendant,
@@ -334,7 +365,7 @@ server <- function(input, output, session) {
                                                top_pheno_final_descendants%>%
                                                  filter(hpo_id_name==(top_obligate_pheno()$hpo_id_name))%>%
                                                  pull(final_desc))
-        
+      
     }
     if (num_of_phenos_that_are_obligated > 0 & !modal_shown()) {
       question_text<-ifelse(top_pheno_final_descendants_text=='' | nchar(top_pheno_final_descendants_text)>800,
@@ -369,7 +400,7 @@ server <- function(input, output, session) {
   observeEvent(input$stop_button, {
     modal_shown(TRUE)
     removeModal()  
-
+    
   })
   # server: observer - yes_button ####
   observeEvent(input$yes_button, {
@@ -377,6 +408,7 @@ server <- function(input, output, session) {
     questions_answered(questions_answered() + 1)
     removeModal()
     additional_phenos <- c(additional_phenos_present_reactive(), top_obligate_pheno()$hpo_id_name)
+    added_pheno(top_obligate_pheno()$hpo_id_name)
     additional_phenos_present_reactive(additional_phenos)
     updateSelectizeInput(session, inputId = 'additional_pheno', choices = unique(full_hpoa_df$hpo_id_name),selected = additional_phenos,server=TRUE) # Update additional_pheno input
   })
@@ -409,14 +441,12 @@ server <- function(input, output, session) {
     maybe_phenos_reactive(maybe_phenos)
     # No modifications made to any lists, simply continue to the next question.
   })
-
+  
   
   # Function to create the disorders table
   
   create_disorders_table <- function(all_phenos_data, rejected_disorders) {
-    # print(all_phenos_data$all_phenos_from_disorders_with_main_phenos %>%
-    #   filter(!(disease_id %in% rejected_disorders))%>%count(frequency_cat))
-    
+
     disorders <- all_phenos_data$all_phenos_from_disorders_with_main_phenos %>%
       filter(!is_ancestor)%>%
       filter(frequency_cat %in% c('obligate','very_frequent','frequent','unknown'))%>%
@@ -428,20 +458,56 @@ server <- function(input, output, session) {
     
     return(disorders)
   }
+  library(dplyr)
   
-  update_disorders_likelihood_v1<-function(){
+  # Function to update disease probabilities based on user inputs
+  update_disorders_likelihood_bayes <- function() {
     all_phenos_data <- all_phenos_data()
-    rejected_phen <- rejected_phenos()
-    disorders_with_likelihood<-all_phenos_data$all_phenos_from_disorders_with_main_phenos%>%
-      mutate(is_rejected=ifelse(hpo_id_name %in% rejected_phen,TRUE,FALSE),
-             hpo_likelihood_score=ifelse(is_rejected & frequency_cat!='excluded',-frequency_score,0))%>%
-      # if you want only one occurance of each hpo term per disorder group by hpo_id_name use distinct, otherwise remove it from grouping
-      select(disease_id,hpo_id_name,hpo_likelihood_score)%>%distinct()%>%
-      group_by(disease_id)%>%
-      summarize(likelihood=sum(hpo_likelihood_score))%>%
-      # re-add the disease name
-      left_join(disorder_to_gene%>%group_by(disease_id,disease_name)%>%summarize(genes=paste0(gene_symbol,collapse=','))%>%ungroup())
-    return(disorders_with_likelihood)
+    priors<-calc_initial_disease_priors()
+    message(glue('Initial prior probs: {priors%>%pull(prior_prob)%>%unique()}'))
+    main_phen<-main_phenos_reactive()
+    additional_phen<-additional_phenos_present_reactive()
+    selected_phenotypes<-c(main_phen,additional_phen)
+    rejected_phenotypes <- rejected_phenos()
+    # Add a column to indicate whether a phenotype is selected, rejected, or unspecified
+    phenotype_disease_table <- all_phenos_data$all_phenos_from_disorders_with_main_phenos %>%
+      mutate(status = case_when(
+        hpo_id_name %in% selected_phenotypes ~ 'selected',
+        hpo_id_name %in% rejected_phenotypes ~ 'rejected',
+        TRUE ~ 'unspecified'
+      ))
+    
+    # Process selected phenotypes
+    selected_updates <- phenotype_disease_table %>%
+      filter(status == 'selected') %>%
+      group_by(disease_id) %>%
+      summarize(product_selected = prod(frequency_bayes), .groups = 'drop')
+      #summarize(product_selected = prod(ifelse(status=='selected',frequency_bayes,0.05)), .groups = 'drop')
+    
+    # Process rejected phenotypes
+    rejected_updates <- phenotype_disease_table %>%
+      filter(status == 'rejected') %>%
+      group_by(disease_id) %>%
+      summarize(product_rejected = prod(1-frequency_bayes), .groups = 'drop')
+    
+    # Combine updates and include diseases with unspecified phenotypes (which will not affect the calculation)
+    combined_updates <- phenotype_disease_table %>% left_join(priors)%>%
+      select(disease_id,prior_prob) %>%
+      distinct() %>%
+      left_join(selected_updates, by = "disease_id") %>%
+      left_join(rejected_updates, by = "disease_id") %>%
+      mutate(product_selected = replace_na(product_selected, 1),
+             product_rejected = replace_na(product_rejected, 1),
+             updated_probability = prior_prob* product_selected * product_rejected)
+    
+    # Normalize probabilities so they sum to 1
+    combined_updates <- combined_updates %>%
+      mutate(likelihood = updated_probability / sum(updated_probability),confidence=updated_probability / sum(updated_probability))%>%
+      left_join(disorder_to_gene%>%group_by(disease_id,disease_name)%>%
+                  summarize(genes=paste0(gene_symbol,collapse=','))%>%ungroup())%>%relocate(disease_name)
+    message(glue('TOP DISORDERS:'))
+    print(combined_updates%>%slice_max(n=3,order_by=likelihood)%>%select(disease_name,likelihood))
+    return(combined_updates)
   }
   
   update_disorders_likelihood<-function(){
@@ -475,7 +541,7 @@ server <- function(input, output, session) {
     all_phenos_data <- all_phenos_data()
     
     if (is.null(all_phenos_data)) return(NULL)
-    disorders_with_likelihood<-update_disorders_likelihood()  
+    disorders_with_likelihood<-update_disorders_likelihood_bayes()  
     disorders_with_likelihood<-disorders_with_likelihood%>%
       left_join(
         all_phenos_data$all_phenos_from_disorders_with_main_phenos%>%
@@ -487,13 +553,13 @@ server <- function(input, output, session) {
       )%>%
       arrange(desc(likelihood))
     disorders_with_likelihood
-
+    
   })
   
   panel_genes_reactive<-reactive({
     message('Running reactive: panel_genes_reactive')
     if (is.null(all_phenos_data)) return(NULL)
-    disorders_with_likelihood<-update_disorders_likelihood()
+    disorders_with_likelihood<-update_disorders_likelihood_bayes()
     selected_panelapp_panels<-panelapp_panels_reactive()
     disorder_to_gene_for_table<-disorder_to_gene
     panelapp_genes_not_in_disorder_to_gene_table<-NULL
@@ -510,8 +576,8 @@ server <- function(input, output, session) {
         filter(!gene_symbol%in%disorder_to_gene_for_table$gene_symbol)%>%
         mutate(disease_id=glue('PANELAPP:{panel_id}'),
                disease_name=glue('{panel_name}'),
-               likelihood=as.numeric(confidence_level)-2.5,
-               confidence=as.numeric(confidence_level),
+               likelihood=as.numeric(confidence_level),
+               confidence=as.numeric(confidence_level)-2.5,
                panelapp_cat=as.numeric(confidence_level))%>%
         select(disease_id,gene_symbol,disease_name,likelihood,confidence)
       disorder_to_gene_for_table<-disorder_to_gene_for_table%>%filter(gene_symbol%in%panelapp_genes)
@@ -526,19 +592,19 @@ server <- function(input, output, session) {
         mutate(disease_id_name=glue('{disease_id}:{disease_name}'))%>%
         group_by(gene_symbol)%>%
         summarize(disorders=paste0(disease_id_name,collapse=' | '),
-                  likelihood=round(max(likelihood),3),
-                  confidence=round(max(confidence),3))
+                  likelihood=round(max(likelihood),5),
+                  confidence=round(max(confidence),5))
     }else{
-    # if a panelapp panel was selected, add the panelapp category to each gene
+      # if a panelapp panel was selected, add the panelapp category to each gene
       panel_genes_table<-disorder_to_gene_for_table%>%
         inner_join(likely_disorders)%>%
         bind_rows(panelapp_genes_not_in_disorder_to_gene_table%>%
-                    filter(likelihood>input$likelihood_threshold))%>%
+                    filter(likelihood>quantile(likelihood,probs=input$likelihood_threshold)))%>%
         mutate(disease_id_name=glue('{disease_id}:{disease_name}'))%>%
         group_by(gene_symbol)%>%
         summarize(disorders=paste0(disease_id_name,collapse=' | '),
-                  likelihood=round(max(likelihood),3),
-                  confidence=round(max(confidence),3),
+                  likelihood=round(max(likelihood),5),
+                  confidence=round(max(confidence),5),
                   panelapp_cat=max(panelapp_cat))
     }
     
