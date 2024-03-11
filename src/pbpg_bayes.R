@@ -125,7 +125,7 @@ ui <- fluidPage(
              mainPanel(
                br(),
                fluidRow(
-                 column(10,sliderInput("likelihood_threshold", "Likelihood Threshold:", 0.01, min = 0, max = 0.5, step = 0.005))
+                 column(10,sliderInput("likelihood_threshold", "Likelihood Threshold:", 0.1, min = 0, max = 1, step = 0.01))
                ),
                br(),
                fluidRow(
@@ -443,7 +443,7 @@ server <- function(input, output, session) {
   })
   
   
-  # Function to create the disorders table
+  # Disorder table functions ####
   
   create_disorders_table <- function(all_phenos_data, rejected_disorders) {
 
@@ -510,31 +510,6 @@ server <- function(input, output, session) {
     return(combined_updates)
   }
   
-  update_disorders_likelihood<-function(){
-    all_phenos_data <- all_phenos_data()
-    main_phen<-main_phenos_reactive()
-    additional_phen<-additional_phenos_present_reactive()
-    rejected_phen <- rejected_phenos()
-    disorders_with_likelihood<-all_phenos_data$all_phenos_from_disorders_with_main_phenos%>%
-      mutate(is_rejected=ifelse(hpo_id_name %in% rejected_phen,TRUE,FALSE),
-             is_main=ifelse(hpo_id_name %in% main_phen,TRUE,FALSE),
-             is_additional=ifelse(hpo_id_name %in% additional_phen,TRUE,FALSE),
-             hpo_likelihood_score=ifelse(is_rejected & frequency_cat!='excluded',(-frequency_score),0),
-             hpo_confidence_score=case_when(is_rejected & frequency_cat!='excluded'~(-frequency_score),
-                                            is_main & frequency_cat=='excluded'~-2,
-                                            is_main & frequency_cat!='excluded'~frequency_score,
-                                            is_additional & frequency_cat!='excluded'~frequency_score,
-                                            TRUE~0))%>%
-      # if you want only one occurance of each hpo term per disorder group by hpo_id_name use distinct, otherwise remove it from grouping
-      select(disease_id,hpo_id_name,hpo_likelihood_score,hpo_confidence_score)%>%distinct()%>%
-      group_by(disease_id)%>%
-      summarize(likelihood=sum(hpo_likelihood_score),confidence=sum(hpo_confidence_score))%>%
-      # re-add the disease name
-      left_join(disorder_to_gene%>%group_by(disease_id,disease_name)%>%
-                  summarize(genes=paste0(gene_symbol,collapse=','))%>%ungroup())
-    return(disorders_with_likelihood)
-  }
-  
   # Reactive to prepare the data for the disorders table
   disorders_data_reactive <- reactive({
     message('Running reactive: disorders_data_reactive')
@@ -556,12 +531,27 @@ server <- function(input, output, session) {
     
   })
   
+  # Generate the panel genes table ####
   panel_genes_reactive<-reactive({
     message('Running reactive: panel_genes_reactive')
+    main_phen<-main_phenos_reactive()
+    additional_phen<-additional_phenos_present_reactive()
+    selected_phenotypes<-c(main_phen,additional_phen)
+    rejected_phenotypes <- rejected_phenos()
+    
     if (is.null(all_phenos_data)) return(NULL)
     disorders_with_likelihood<-update_disorders_likelihood_bayes()
+    all_phenos_data <- all_phenos_data()
+    # get the selected phenotypes and their associated disorders
+    selected_phenos_for_genes<-
+      all_phenos_data$all_phenos_from_disorders_with_main_phenos%>%
+      filter(hpo_id_name %in% c(selected_phenotypes,rejected_phenotypes))%>%
+      mutate(frequency_cat=ifelse(is.na(frequency_cat),'not_characteristic',frequency_cat),
+             hpo_id_name_freq=glue('{hpo_id_name}({frequency_cat})'))
+    print(selected_phenos_for_genes)
     selected_panelapp_panels<-panelapp_panels_reactive()
     disorder_to_gene_for_table<-disorder_to_gene
+    disorder_to_gene_for_table<-disorder_to_gene_for_table%>%left_join(selected_phenos_for_genes)
     panelapp_genes_not_in_disorder_to_gene_table<-NULL
     if (!is.null(selected_panelapp_panels)){
       # first add the panelapp confidence to all the genes
@@ -570,7 +560,7 @@ server <- function(input, output, session) {
                     filter(panel_name%in%selected_panelapp_panels)%>%
                     select(gene_symbol,panelapp_cat=confidence_level))
       panelapp_genes<-panelapp%>%filter(panel_name%in%selected_panelapp_panels)%>%pull(gene_symbol)
-      # add panelapp genes not in disorder to gene genes
+      # add panelapp genes not in disorder to panel genes
       panelapp_genes_not_in_disorder_to_gene_table<-panelapp%>%
         filter(panel_name%in%selected_panelapp_panels)%>%
         filter(!gene_symbol%in%disorder_to_gene_for_table$gene_symbol)%>%
@@ -584,16 +574,19 @@ server <- function(input, output, session) {
     }
     # filter by user selected threshold
     likely_disorders<-disorders_with_likelihood%>%
-      filter(likelihood>input$likelihood_threshold)%>%select(-genes)
-    # if no selecte panelapp panel
+      filter(likelihood>quantile(likelihood,probs=input$likelihood_threshold))%>%select(-genes)
+    
+    # if no selected panelapp panel
     if (is.null(panelapp_genes_not_in_disorder_to_gene_table)){
       panel_genes_table<-disorder_to_gene_for_table%>%
         inner_join(likely_disorders)%>%
         mutate(disease_id_name=glue('{disease_id}:{disease_name}'))%>%
-        group_by(gene_symbol)%>%
-        summarize(disorders=paste0(disease_id_name,collapse=' | '),
+        group_by(gene_symbol,hpo_id_name)%>%
+        slice_max(n=1,with_ties = F,order_by = frequency_bayes)%>%ungroup()%>%group_by(gene_symbol)%>%
+        summarize(disorders=paste0(unique(disease_id_name),collapse=' | '),
                   likelihood=round(max(likelihood),5),
-                  confidence=round(max(confidence),5))
+                  confidence=round(max(confidence),5),
+                  phenotypes_answered=paste0(unique(hpo_id_name_freq),collapse=','))
     }else{
       # if a panelapp panel was selected, add the panelapp category to each gene
       panel_genes_table<-disorder_to_gene_for_table%>%
@@ -602,9 +595,10 @@ server <- function(input, output, session) {
                     filter(likelihood>quantile(likelihood,probs=input$likelihood_threshold)))%>%
         mutate(disease_id_name=glue('{disease_id}:{disease_name}'))%>%
         group_by(gene_symbol)%>%
-        summarize(disorders=paste0(disease_id_name,collapse=' | '),
+        summarize(disorders=paste0(unique(disease_id_name),collapse=' | '),
                   likelihood=round(max(likelihood),5),
                   confidence=round(max(confidence),5),
+                  supporting=paste0(unique(hpo_id_name_freq),collapse=','),
                   panelapp_cat=max(panelapp_cat))
     }
     
