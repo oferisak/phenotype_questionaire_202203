@@ -6,7 +6,6 @@ library(ProjectTemplate)
 library(ontologyIndex)
 library(bslib)
 library(data.table)
-library(tidytable)
 setwd('..')
 data(hpo)
 load.project()
@@ -75,6 +74,7 @@ ui <- fluidPage(
                             )
                         ))
                ),
+               
                br(),
                fluidRow(
                  column(10, 
@@ -98,6 +98,9 @@ ui <- fluidPage(
                  column(4,
                         actionButton(inputId = "start_analysis", label = tags$span(" Start Analysis"), class = "btn-primary")
                  ),
+                 column(6,downloadButton('export_phenotypes',label = 'Export phenotypes', class = "btn-primary"))),
+               br(),
+               fluidRow(
                  column(6,
                         textOutput("questionsAnsweredText") )
                ),
@@ -157,7 +160,12 @@ server <- function(input, output, session) {
   top_obligate_pheno <- reactiveVal()
   modal_shown <- reactiveVal(FALSE)
   questions_answered <- reactiveVal(0)
-  
+  all_phenotypes <- reactive({
+    data.frame(
+      Phenotype = c(input$main_pheno, input$additional_pheno, input$possible_pheno, input$rejected_pheno),
+      Source = rep(c("main", "additional", "possible", "rejected"), times = c(length(input$main_pheno), length(input$additional_pheno), length(input$possible_pheno), length(input$rejected_pheno)))
+    )
+  })
   # server: update main phenotypes input ####
   observe({
     updateSelectizeInput(session, "main_pheno", choices = unique(full_hpoa_df$hpo_id_name),server=TRUE)
@@ -663,6 +671,15 @@ server <- function(input, output, session) {
   observeEvent(input$likelihood_threshold,{
     output$likelihood_threshold_text<-renderText(glue('Genes with a likelihood below the bottom {input$likelihood_threshold*100}% will be filtered out.'))
   })
+  # output - export selected phenotypes
+  output$export_phenotypes <- downloadHandler(
+    filename = function() { paste("phenotypes-", Sys.Date(), ".csv", sep="") },
+    content = function(file) {
+      phenotypes <- all_phenotypes()  # Get the data from the reactive expression
+      write.table(phenotypes, file, row.names = FALSE,sep='\t',quote = F)
+    }
+  )
+
 }
 
 
