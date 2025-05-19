@@ -15,8 +15,8 @@ load.project()
 # if a phenotype is very specific - it will count as very high evidence for the disorder - but will still show up as unknown in the table
 
 # prepare the data and save it
-# full_hpoa_df<-parse_hpo_hpoa_db()
-# save(full_hpoa_df,file='/media/SSD/Bioinformatics/Projects/phenotype_questionaire_202203/data/preprocessed_data.RData')
+# full_hpoa_df <- parse_hpo_hpoa_db()
+# save(full_hpoa_df, file = "~/Projects/phenotype_questionaire_202203/data/preprocessed_data.RData")
 
 # Tried:
 ## modify the questions order to be according to the total frequency in the different disorders (more frequent will be asked before) -
@@ -104,6 +104,8 @@ ui <- fluidPage(
           )
         ),
         br(),
+        fluidRow(checkboxInput(inputId = "unknown_score_by_specificity", label = "Consider specificity for unknown frequencies", value = FALSE)),
+        br(),
         fluidRow(
           column(
             10,
@@ -154,7 +156,7 @@ ui <- fluidPage(
       mainPanel(
         br(),
         fluidRow(
-          column(10, downloadButton("download_disorders", "Download Disorders Table"))
+          column(12, downloadButton("download_disorders", "Download Disorders Table"))
         ),
         br(),
         fluidRow(
@@ -168,17 +170,15 @@ ui <- fluidPage(
       mainPanel(
         br(),
         fluidRow(
-          column(10, sliderInput("likelihood_threshold", "Select top percentile:", 0.3, min = 0, max = 1, step = 0.05)),
+          column(12, sliderInput("likelihood_threshold", "Select top percentile:", 0.3, min = 0, max = 1, step = 0.05)),
           textOutput("likelihood_threshold_text")
         ),
         br(),
         fluidRow(
-          column(10, downloadButton("download_panel_genes", "Download Panel Genes Table"))
+          column(12, downloadButton("download_panel_genes", "Download Panel Genes Table"))
         ),
         br(),
-        fluidRow(
-          dataTableOutput("panel_genes_table")
-        )
+        dataTableOutput("panel_genes_table")
       )
     )
   )
@@ -288,7 +288,11 @@ server <- function(input, output, session) {
 
     all_phenos_from_disorders_with_main_phenos <- full_hpoa_df %>%
       filter(disease_id %in% all_disorders_with_main_phenos) %>%
-      mutate(frequency_bayes = ifelse(frequency_cat == "unknown", bayes_freq_for_unknown, frequency_bayes))
+      mutate(frequency_bayes = ifelse((frequency_cat == "unknown") & !input$unknown_score_by_specificity, bayes_freq_for_unknown,
+        ifelse((frequency_cat == "unknown") & input$unknown_score_by_specificity, specificity_score,
+          frequency_bayes
+        )
+      ))
 
     complete_grid <- expand.grid(
       disease_id = unique(all_phenos_from_disorders_with_main_phenos$disease_id),
@@ -448,6 +452,7 @@ server <- function(input, output, session) {
     top_pheno <- hpos_by_count %>%
       ungroup() %>%
       filter(!(hpo_id_name %in% phenos_data$main_phenos)) %>%
+      filter(n < 100) %>%
       slice_max(order_by = n, n = 1, with_ties = F)
 
     top_obligate_pheno(top_pheno)
@@ -465,10 +470,10 @@ server <- function(input, output, session) {
     }
     if (num_of_phenos_that_are_obligated > 0 & !modal_shown()) {
       question_text <- ifelse(top_pheno_final_descendants_text == "" | nchar(top_pheno_final_descendants_text) > 800,
-        glue("There are {nrow(hpos_by_count)} more phenotypes from {length(disorders_remaining)} different disorders to ask about.Does your patient have:<br><b>{top_pheno %>% pull(hpo_id_name)}</b><br>"),
-        glue("There are {nrow(hpos_by_count)} more phenotypes from {length(disorders_remaining)} different disorders to ask about.Does your patient have:<br><b>{top_pheno %>% pull(hpo_id_name)}</b><br>Specifically:<br>{top_pheno_final_descendants_text}<br>")
+        glue("There are {nrow(hpos_by_count)} more phenotypes from {length(disorders_remaining)} different disorders to ask about.Does your patient have:<br><b>{top_pheno %>% pull(hpo_id_name)}</b> (present in {top_pheno %>% pull(n)} disorders)<br>"),
+        glue("There are {nrow(hpos_by_count)} more phenotypes from {length(disorders_remaining)} different disorders to ask about.Does your patient have:<br><b>{top_pheno %>% pull(hpo_id_name)}</b> (present in {top_pheno %>% pull(n)} disorders)<br>Specifically:<br>{top_pheno_final_descendants_text}<br>")
       )
-      print(question_text)
+      # print(question_text)
       showModal(modalDialog(
         title = "Confirm Phenotype",
         # glue("There are {nrow(hpos_by_count)} more phenotypes to ask about.\nDoes your patient have {top_pheno %>% pull(hpo_id_name)}\nSpecifically:\n{top_pheno_final_descendants}?"),
@@ -663,7 +668,7 @@ server <- function(input, output, session) {
         frequency_cat = ifelse(is.na(frequency_cat), "not_characteristic", frequency_cat),
         hpo_id_name_freq = glue("{hpo_id_name}({frequency_cat})")
       )
-    print(selected_phenos_for_genes)
+    # print(selected_phenos_for_genes)
     selected_panelapp_panels <- panelapp_panels_reactive()
     disorder_to_gene_for_table <- disorder_to_gene
     disorder_to_gene_for_table <- disorder_to_gene_for_table %>% left_join(selected_phenos_for_genes)
