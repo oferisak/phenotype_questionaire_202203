@@ -1,4 +1,4 @@
-version <- 0.23
+version <- 0.24
 library(shiny)
 library(shinyWidgets)
 library(ProjectTemplate)
@@ -369,7 +369,7 @@ server <- function(input, output, session) {
     message(glue("INFO: mean likelihoods after update {mean(likelihoods_after_update)}"))
 
     if (length(likelihoods_before_update) > 0) {
-      message(glue("INFO: mean :{mean(abs(likelihoods_after_update-likelihoods_before_update))} | max:{max(abs(likelihoods_after_update-likelihoods_before_update))} | sum: {sum(abs(likelihoods_after_update-likelihoods_before_update))}"))
+      message(glue("INFO: changes in likelihood: mean :{mean(abs(likelihoods_after_update-likelihoods_before_update))} | max:{max(abs(likelihoods_after_update-likelihoods_before_update))} | sum: {sum(abs(likelihoods_after_update-likelihoods_before_update))}"))
       mean_change <- mean(abs(likelihoods_after_update - likelihoods_before_update))
     }
     # set the threshold so that all the disorders below the analysis_depth quantile will be considered unlikely and will not be asked about
@@ -535,7 +535,7 @@ server <- function(input, output, session) {
   # server: observer - be_more_specific_button ####
   observeEvent(input$be_more_specific_button, {
     modal_shown(FALSE)
-    questions_answered(questions_answered() + 1)
+    # questions_answered(questions_answered() + 1)
     removeModal()
     maybe_phenos <- c(maybe_phenos_reactive(), top_obligate_pheno()$hpo_id_name)
     maybe_phenos_reactive(maybe_phenos)
@@ -697,9 +697,17 @@ server <- function(input, output, session) {
       disorder_to_gene_for_table <- disorder_to_gene_for_table %>% filter(gene_symbol %in% panelapp_genes)
     }
     # filter by user selected threshold
+    # message(glue("DEBUG: disorders_with_likelihood quantile:"))
+    # disorders_with_likelihood %>%
+    #   pull(quantile) %>%
+    #   summary() %>%
+    #   print()
+
+
     likely_disorders <- disorders_with_likelihood %>%
       filter(quantile > input$likelihood_threshold) %>%
       select(-genes)
+
 
     # if no selected panelapp panel
     if (is.null(panelapp_genes_not_in_disorder_to_gene_table)) {
@@ -721,8 +729,11 @@ server <- function(input, output, session) {
       # if a panelapp panel was selected, add the panelapp category to each gene
       panel_genes_table <- disorder_to_gene_for_table %>%
         inner_join(likely_disorders) %>%
-        bind_rows(panelapp_genes_not_in_disorder_to_gene_table %>%
-          filter(quantile > input$likelihood_threshold)) %>%
+        bind_rows(
+          panelapp_genes_not_in_disorder_to_gene_table %>%
+            inner_join(likely_disorders) %>%
+            filter(quantile > input$likelihood_threshold)
+        ) %>%
         mutate(disease_id_name = glue("{disease_id}:{disease_name}")) %>%
         group_by(gene_symbol) %>%
         summarize(
